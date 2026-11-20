@@ -4,9 +4,9 @@ A kick drum synth for Bitwig Studio, made especially for psytrance kicks and bui
 
 ## Demo
 
-[![KickForge demo: click to watch the video](media/kickforge-demo.jpg)](media/kickforge-demo.mp4)
+https://github.com/user-attachments/assets/ff9ad27a-414e-44da-a19f-265ee4cfe7b6
 
-*Click the picture to watch the demo (1 min 34, with sound).*
+*1 min 34, with sound. Also in [`media/kickforge-demo.mp4`](media/kickforge-demo.mp4).*
 
 *Français plus bas.*
 
