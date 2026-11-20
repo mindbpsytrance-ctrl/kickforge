@@ -1,0 +1,247 @@
+component kickforge_phase
+{
+    // Drives KickForge's two native curves. While a kick plays, each phase output is
+    // the time since the hit as a fraction (0..1) of its curve's length. While idle,
+    // it scans 11 points across both curves (denser near the start) so the panel can
+    // draw the kick's waveform from the curves as they are edited. The curve atoms answer per block (512 samples here)
+    // and may be a block late: each point is held SCAN_HOLD samples and only read from
+    // SCAN_READ on (more than a block after the change, v28 and earlier read from 384 of
+    // 512 and caught a stale value now and then: a jolt in the drawing). The first point
+    // of a sweep, after the last (the most different value), is held twice as long.
+    // ctl = <state, time ms (playing) or settled flag (idle), pitch length ms, amp length ms>
+    //   state 1 = playing, state -(1 + k) = idle, scanning point k.
+    event_inport NoteEvent note_in
+    {
+        if ((note_in.key >= 0) && (note_in.key < 128))
+        {
+            if (note_in.type == note_in.NOTE_ON)
+                pending_trigger = pending_trigger + 1;
+        }
+    }
+
+    // Order must match the document's nitro_inputs.
+    audio_inport f32 pitch_length = 0.3;     // seconds (Time mode)
+    audio_inport f32 amp_length = 0.6;       // seconds (Time mode)
+    value_inport i32 pitch_sync = 0;         // 0 = Time, 1 = Sync
+    value_inport i32 pitch_div = 4;          // division index (see div_beats)
+    value_inport i32 amp_sync = 0;
+    value_inport i32 amp_div = 7;
+    audio_inport f32 beats_per_frame = 0.0;  // from the transport
+    value_inport i32 tune_note = 31;         // MIDI note, 24 .. 36 = C0 .. C1 in Bitwig's names
+    audio_inport f32 pitch_time_scale = 0.668;  // 0..1: 0 = time even across the curve, up = more room for the start
+    audio_inport f32 amp_time_scale = 0.347;
+    value_inport i32 view = 0;               // the shown tab (unused since v39: the scan is the same for all)
+
+    audio_outport f32 pitch_phase;
+    audio_outport f32 amp_phase;
+    audio_outport f32<4> ctl;
+    audio_outport f32 tune_hz;
+    audio_outport f32 ms_per_beat_out;
+    // (v70) the click's two curves (pitch, amp), swept all the time: 21 points, x = k / 20, each
+    // held as the body's scan points; the voice and the click's display keep the points (the
+    // curve atoms answer per block, far too coarse for a click of a few ms: the voice plays its
+    // own copy, sample by sample). click_ctl = <point k, settled (1) or not (0)>
+    audio_outport f32 click_phase;
+    audio_outport f32<2> click_ctl;
+
+    i32 runtime_magic = 0;
+    i32 pending_trigger = 0;
+    i32 handled_trigger = 0;
+    bool playing = false;
+    f32 time_ms = 0.0;
+    i32 scan = 0;
+    i32 hold = 0;
+    i32 cscan = 0;
+    i32 chold = 0;
+    // (v51) the warps' constants and the root, cached: recomputed only when their parameter moves
+    // (before: three exp and two log a sample)
+    f32 c_pw = -1.0;
+    f32 c_pk = 0.0;
+    f32 c_pn = 1.0;
+    f32 c_aw = -1.0;
+    f32 c_ak = 0.0;
+    f32 c_an = 1.0;
+    i32 c_note = -1;
+    f32 c_root = 49.0;
+
+    // Note values in beats (a quarter note = 1 beat).
+    f32 div_beats(i32 index)
+    {
+        if (index <= 0) return 0.0625;      // 1/64
+        if (index == 1) return 0.0833333;   // 1/32T
+        if (index == 2) return 0.125;       // 1/32
+        if (index == 3) return 0.1666667;   // 1/16T
+        if (index == 4) return 0.25;        // 1/16
+        if (index == 5) return 0.3333333;   // 1/8T
+        if (index == 6) return 0.375;       // 1/16D
+        if (index == 7) return 0.5;         // 1/8
+        if (index == 8) return 0.6666667;   // 1/4T
+        if (index == 9) return 0.75;        // 1/8D
+        if (index == 10) return 1.0;        // 1/4
+        if (index == 11) return 1.3333333;  // 1/2T
+        if (index == 12) return 1.5;        // 1/4D
+        if (index == 13) return 2.0;        // 1/2
+        if (index == 14) return 3.0;        // 1/2D
+        return 4.0;                         // 1 bar
+    }
+
+    f32 effective_length(f32 seconds, i32 sync, i32 div, f32 ms_per_beat)
+    {
+        f32 length = seconds * 1000.0;
+        if (sync == 1)
+            length = div_beats(div) * ms_per_beat;
+        return fmin(8000.0, fmax(1.0, length));
+    }
+
+    // Time (0..1 of the length) -> position on the curve: log(1 + k t) / log(1 + k),
+    // k = 1001^scale - 1, so the start of the kick takes more of the curve's width.
+    // (v51: k and 1 / log(1 + k) come in, cached per scale)
+    f32 warp(f32 t, f32 k, f32 inv_norm)
+    {
+        f32 x = fmax(0.0, fmin(1.0, t));
+        if (k < 0.0001)
+            return x;
+        return log(1.0 + (k * x)) * inv_norm;
+    }
+
+    reset
+    {
+        runtime_magic = 0;
+    }
+
+    process
+    {
+        f32 sr = EC.samplerate;
+        f32 k_p_s = pitch_length;
+        f32 k_a_s = amp_length;
+        i32 k_p_sync = pitch_sync;
+        i32 k_p_div = pitch_div;
+        i32 k_a_sync = amp_sync;
+        i32 k_a_div = amp_div;
+        f32 k_bpf = beats_per_frame;
+        i32 k_note = tune_note;
+        f32 k_pw = pitch_time_scale;
+        f32 k_aw = amp_time_scale;
+        i32 k_view = view;
+
+        // Tempo: beats per sample from the transport; 120 BPM when it is not usable.
+        f32 ms_per_beat = 500.0;
+        f32 bpm = k_bpf * sr * 60.0;
+        if ((bpm >= 20.0) && (bpm <= 999.0))
+            ms_per_beat = 60000.0 / bpm;
+        f32 p_len = effective_length(k_p_s, k_p_sync, k_p_div, ms_per_beat);
+        f32 a_len = effective_length(k_a_s, k_a_sync, k_a_div, ms_per_beat);
+
+        // Root of the body: the Tune note, C0 .. C1.
+        if (k_note != c_note)
+        {
+            c_note = k_note;
+            f32 midi = fmax(24.0, fmin(36.0, cast(k_note, f32)));
+            c_root = 440.0 * exp(0.0577622650 * (midi - 69.0));
+        }
+        f32 root = c_root;
+        if (k_pw != c_pw)
+        {
+            c_pw = k_pw;
+            c_pk = exp(6.908754779 * fmax(0.0, fmin(1.0, k_pw))) - 1.0;
+            c_pn = 1.0 / log(1.0 + fmax(c_pk, 0.0001));
+        }
+        if (k_aw != c_aw)
+        {
+            c_aw = k_aw;
+            c_ak = exp(6.908754779 * fmax(0.0, fmin(1.0, k_aw))) - 1.0;
+            c_an = 1.0 / log(1.0 + fmax(c_ak, 0.0001));
+        }
+
+        if (runtime_magic != 7340116)
+        {
+            runtime_magic = 7340116;
+            handled_trigger = pending_trigger;
+            playing = false;
+            time_ms = 0.0;
+            scan = 0;
+            hold = 0;
+            cscan = 0;
+            chold = 0;
+        }
+        if (pending_trigger != handled_trigger)
+        {
+            handled_trigger = pending_trigger;
+            playing = true;
+            time_ms = 0.0;
+        }
+        if (playing && (time_ms >= fmax(p_len, a_len)))
+        {
+            playing = false;
+            hold = 0;
+        }
+
+        f32 t = time_ms;
+        f32 info = time_ms;
+        f32 state = 1.0;
+        f32 p_x = warp(t / p_len, c_pk, c_pn);
+        f32 a_x = warp(t / a_len, c_ak, c_an);
+        if (!playing)
+        {
+            // scan point k: position (k / 10)^2 across both curves (v39: on the curves, the same for
+            // every tab; before, at (k / 10)^2 of the shown tab's length in time, so the points
+            // moved with the lengths and time scales: turning those redrew the waveform point by
+            // point, in jolts. The shader now puts the points in time with the live values.)
+            i32 k = scan;
+            f32 u = cast(k, f32) * 0.1;
+            p_x = u * u;
+            a_x = u * u;
+            state = -1.0 - cast(k, f32);
+            i32 hold_len = 768;
+            i32 read_from = 640;
+            if (k == 0)
+            {
+                hold_len = 1536;
+                read_from = 1408;
+            }
+            info = 0.0;
+            if (hold >= read_from)
+                info = 1.0;
+            hold = hold + 1;
+            if (hold >= hold_len)
+            {
+                hold = 0;
+                scan = scan + 1;
+                if (scan >= 11)
+                    scan = 0;
+            }
+        }
+
+        pitch_phase = fmin(0.999, p_x);
+        amp_phase = fmin(0.999, a_x);
+        ctl = <state, info, p_len, a_len>;
+        tune_hz = root;
+        ms_per_beat_out = ms_per_beat;
+
+        // (v70) the click's curves: one point after another, round and round
+        i32 ck = cscan;
+        i32 c_hold_len = 768;
+        i32 c_read_from = 640;
+        if (ck == 0)
+        {
+            c_hold_len = 1536;
+            c_read_from = 1408;
+        }
+        f32 c_ready = 0.0;
+        if (chold >= c_read_from)
+            c_ready = 1.0;
+        chold = chold + 1;
+        if (chold >= c_hold_len)
+        {
+            chold = 0;
+            cscan = cscan + 1;
+            if (cscan >= 21)
+                cscan = 0;
+        }
+        click_phase = fmin(0.999, cast(ck, f32) * 0.05);
+        click_ctl = <cast(ck, f32), c_ready>;
+
+        if (playing)
+            time_ms = time_ms + (1000.0 / sr);
+    }
+}

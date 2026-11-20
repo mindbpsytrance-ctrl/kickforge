@@ -1,0 +1,688 @@
+// KickForge waveform (@NAME@ view), drawn under the native curve editor.
+// Zoom: pitch tab lane2.z.y, amp tab lane2.y.y (0..4 = 1x..16x).
+// Drawing input 0 (audioLow) and 1 (audioMedium) carry 24 bytes, three per float
+// (a*65536 + b*256 + c) / 2^24:
+//   bytes 0..10  frequency at u = (k/10)^2 of the tab's length, log 10 Hz .. 20 kHz
+//   bytes 11..21 level at the same points, 0..1
+//   byte 22      playhead, 0..250 = position, 255 = not playing
+//   byte 23      the tab's length, log 5 ms .. 8 s
+// Drawing input 2 (audioHigh):
+//   x: start phase (0..255 = 0..360 deg), beats in the tab's length x100 (two bytes)
+//   y: root note (MIDI x4), pitch amount (semitones x1.75), pitch scale (0..255)
+//   z: click level, click decay (log 0.2 .. 200 ms), click tone (log 200 Hz .. 20 kHz)
+//   w: click low cut (log 20 Hz .. 8 kHz), (click type * 2 + amp scale) * 16 + ms per beat (12 bits)
+uniform float4 audioLow;
+uniform float4 audioMedium;
+uniform float4 audioHigh;
+
+const float MODE = @MODE@;            // 0 pitch, 1 amp, 2 click, 3 tune note (unused), 4 master (oscilloscope)
+const float X_END = @X_END@;          // the curve editors end there (theme.X_END), not at 1: the
+                                      // cycle's line from the last point back to the first, a
+                                      // vertical at x = 1, stays out of view (v37)
+const float DETAIL = @DETAIL@;        // > 1: the maximized view's detail pane, the curve's first 1/DETAIL
+                                      // across (all its height), as its editor (x_max = 1/DETAIL)
+const float3 WAVE = @COLOR@;          // the attack's colour ...
+const float3 WAVE2 = @COLOR2@;        // ... fading to the tail's (theme.py WAVE / WAVE2)
+const float3 BODY = float3(0.46, 0.46, 0.62);
+// the screen: a cold blue-black glass (theme.py)
+const float3 SCREEN_TOP = float3(0.050, 0.046, 0.102);
+const float3 SCREEN_LOW = float3(0.018, 0.017, 0.040);
+const float3 INK = float3(0.70, 0.69, 0.88);   // scale text
+
+// (v40: + 0.25, not + 0.5: from 2^23 up a float steps by 1, and n + 0.5 rounded to even made an
+// odd word one too many: a last byte of 255 carried into the next, the root and the screen bit)
+float3 bytes3(float x) {
+    float n = floor(x * 16777216.0 + 0.25);
+    float a = floor(n / 65536.0);
+    n -= a * 65536.0;
+    float b = floor(n / 256.0);
+    return float3(a, b, n - b * 256.0);
+}
+
+float freqOf(float b) { return exp(2.302585093 + b / 255.0 * 7.600902460); }
+
+float3 over(float3 base, float3 color, float alpha) {
+    return base + (color - base) * clamp(alpha, 0.0, 1.0);
+}
+
+float hash(float n) {
+    return fract(sin(mod(n, 8192.0) * 12.9898 + 4.1414) * 43758.5453);
+}
+
+// value noise, rate = values per second, -1..1
+float vnoise(float t, float rate) {
+    float x = t * rate;
+    float i = floor(x);
+    float f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i) * 2.0 - 1.0;
+    float b = hash(i + 1.0) * 2.0 - 1.0;
+    return a + (b - a) * f;
+}
+
+// a preview of the click source after its tone (low-pass), -1..1
+float clickNoise(float t, float type, float tone, float hp) {
+    float r = min(2.0 * tone, 44100.0);
+    float lowCut = clamp(1.0 - log(hp / 20.0) / 9.0, 0.35, 1.0);
+    if (type < 0.5) return vnoise(t, r);
+    if (type < 1.5) return (vnoise(t, r) + 0.8 * vnoise(t, r / 3.0) + 0.65 * vnoise(t, r / 9.0)
+                            + 0.5 * vnoise(t, r / 27.0) * lowCut) / 2.2;
+    if (type < 2.5) return (vnoise(t, min(r, 350.0)) * lowCut + 0.45 * vnoise(t, min(r, 1400.0))) / 1.2;
+    if (type < 3.5) return (vnoise(t, r) - 0.6 * vnoise(t, r / 2.0)) * 0.9;
+    if (type < 4.5) return vnoise(t, min(r * 1.5, 44100.0)) * 0.8;
+    if (type < 5.5) {
+        float cell = floor(t * 1800.0);
+        float on = step(0.55, hash(cell + 17.0)) * step(fract(t * 1800.0), 0.12);
+        return on * (hash(cell + 71.0) * 2.0 - 1.0);
+    }
+    if (type > 6.5)   // grey: the mids taken down, the lows up
+        return (0.75 * vnoise(t, r) + 0.55 * vnoise(t, min(r, 350.0)) * lowCut) / 1.1;
+    // (v62) the hats (6: the 909's; the 808's drawn as it): bright metallic noise
+    return (vnoise(t, 44100.0) - 0.5 * vnoise(t, 9000.0)) * 0.9;
+}
+
+// A monoline stroke font, anti-aliased (v35; before: a 3x5 pixel font, scaled by whole pixels):
+// the same character codes and cell (3 wide, 5 high, the top at 0), s pixels per font unit.
+// 0-9, 10 C, 11 -, 12 /, 13 k, 14 D, 15 E, 16 F, 17 G, 18 A, 19 B, 20 #
+float segDist(float2 p, float2 a, float2 b) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+float ringDist(float2 p, float2 c, float2 hs, float r) {
+    float2 q = abs(p - c) - hs + float2(r);
+    return abs(length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r);
+}
+float glyph(float ch, float2 p, float s) {
+    if (p.x < -0.6 || p.y < -0.6 || p.x > 3.2 || p.y > 5.6) return 0.0;
+    float d = 99.0;
+    if (ch < 0.5) { d = min(d, ringDist(p, float2(1.3, 2.5), float2(1.0, 2.2), 1.0)); }
+    else if (ch < 1.5) { d = min(d, segDist(p, float2(0.5, 1.1), float2(1.3, 0.3))); d = min(d, segDist(p, float2(1.3, 0.3), float2(1.3, 4.7))); }
+    else if (ch < 2.5) { d = min(d, segDist(p, float2(0.3, 1.0), float2(0.9, 0.3))); d = min(d, segDist(p, float2(0.9, 0.3), float2(1.7, 0.3))); d = min(d, segDist(p, float2(1.7, 0.3), float2(2.3, 0.9))); d = min(d, segDist(p, float2(2.3, 0.9), float2(2.3, 1.7))); d = min(d, segDist(p, float2(2.3, 1.7), float2(0.3, 4.7))); d = min(d, segDist(p, float2(0.3, 4.7), float2(2.3, 4.7))); }
+    else if (ch < 3.5) { d = min(d, segDist(p, float2(0.3, 0.3), float2(2.3, 0.3))); d = min(d, segDist(p, float2(2.3, 0.3), float2(1.2, 2.2))); d = min(d, segDist(p, float2(1.2, 2.2), float2(1.7, 2.2))); d = min(d, segDist(p, float2(1.7, 2.2), float2(2.3, 2.8))); d = min(d, segDist(p, float2(2.3, 2.8), float2(2.3, 4.1))); d = min(d, segDist(p, float2(2.3, 4.1), float2(1.7, 4.7))); d = min(d, segDist(p, float2(1.7, 4.7), float2(0.9, 4.7))); d = min(d, segDist(p, float2(0.9, 4.7), float2(0.3, 4.1))); }
+    else if (ch < 4.5) { d = min(d, segDist(p, float2(1.8, 4.7), float2(1.8, 0.3))); d = min(d, segDist(p, float2(1.8, 0.3), float2(0.3, 3.4))); d = min(d, segDist(p, float2(0.3, 3.4), float2(2.4, 3.4))); }
+    else if (ch < 5.5) { d = min(d, segDist(p, float2(2.2, 0.3), float2(0.45, 0.3))); d = min(d, segDist(p, float2(0.45, 0.3), float2(0.3, 2.3))); d = min(d, segDist(p, float2(0.3, 2.3), float2(1.6, 2.1))); d = min(d, segDist(p, float2(1.6, 2.1), float2(2.3, 2.8))); d = min(d, segDist(p, float2(2.3, 2.8), float2(2.3, 4.0))); d = min(d, segDist(p, float2(2.3, 4.0), float2(1.6, 4.7))); d = min(d, segDist(p, float2(1.6, 4.7), float2(0.9, 4.7))); d = min(d, segDist(p, float2(0.9, 4.7), float2(0.3, 4.2))); }
+    else if (ch < 6.5) { d = min(d, segDist(p, float2(2.0, 0.3), float2(1.3, 0.3))); d = min(d, segDist(p, float2(1.3, 0.3), float2(0.3, 1.6))); d = min(d, segDist(p, float2(0.3, 1.6), float2(0.3, 4.0))); d = min(d, segDist(p, float2(0.3, 4.0), float2(0.9, 4.7))); d = min(d, segDist(p, float2(0.9, 4.7), float2(1.7, 4.7))); d = min(d, segDist(p, float2(1.7, 4.7), float2(2.3, 4.0))); d = min(d, segDist(p, float2(2.3, 4.0), float2(2.3, 3.0))); d = min(d, segDist(p, float2(2.3, 3.0), float2(1.7, 2.3))); d = min(d, segDist(p, float2(1.7, 2.3), float2(0.9, 2.3))); d = min(d, segDist(p, float2(0.9, 2.3), float2(0.3, 2.9))); }
+    else if (ch < 7.5) { d = min(d, segDist(p, float2(0.3, 0.3), float2(2.3, 0.3))); d = min(d, segDist(p, float2(2.3, 0.3), float2(1.0, 4.7))); }
+    else if (ch < 8.5) { d = min(d, ringDist(p, float2(1.3, 1.35), float2(0.85, 1.05), 0.8)); d = min(d, ringDist(p, float2(1.3, 3.55), float2(1.0, 1.15), 0.9)); }
+    else if (ch < 9.5) { d = min(d, segDist(p, float2(0.6, 4.7), float2(1.3, 4.7))); d = min(d, segDist(p, float2(1.3, 4.7), float2(2.3, 3.4))); d = min(d, segDist(p, float2(2.3, 3.4), float2(2.3, 1.0))); d = min(d, segDist(p, float2(2.3, 1.0), float2(1.7, 0.3))); d = min(d, segDist(p, float2(1.7, 0.3), float2(0.9, 0.3))); d = min(d, segDist(p, float2(0.9, 0.3), float2(0.3, 1.0))); d = min(d, segDist(p, float2(0.3, 1.0), float2(0.3, 2.0))); d = min(d, segDist(p, float2(0.3, 2.0), float2(0.9, 2.7))); d = min(d, segDist(p, float2(0.9, 2.7), float2(1.7, 2.7))); d = min(d, segDist(p, float2(1.7, 2.7), float2(2.3, 2.1))); }
+    else if (ch < 10.5) { d = min(d, segDist(p, float2(2.3, 0.9), float2(1.7, 0.3))); d = min(d, segDist(p, float2(1.7, 0.3), float2(0.9, 0.3))); d = min(d, segDist(p, float2(0.9, 0.3), float2(0.3, 0.9))); d = min(d, segDist(p, float2(0.3, 0.9), float2(0.3, 4.1))); d = min(d, segDist(p, float2(0.3, 4.1), float2(0.9, 4.7))); d = min(d, segDist(p, float2(0.9, 4.7), float2(1.7, 4.7))); d = min(d, segDist(p, float2(1.7, 4.7), float2(2.3, 4.1))); }
+    else if (ch < 11.5) { d = min(d, segDist(p, float2(0.5, 2.5), float2(2.1, 2.5))); }
+    else if (ch < 12.5) { d = min(d, segDist(p, float2(0.4, 4.7), float2(2.2, 0.3))); }
+    else if (ch < 13.5) { d = min(d, segDist(p, float2(0.4, 0.3), float2(0.4, 4.7))); d = min(d, segDist(p, float2(2.2, 1.9), float2(0.4, 3.3))); d = min(d, segDist(p, float2(1.1, 2.8), float2(2.3, 4.7))); }
+    else if (ch < 14.5) { d = min(d, segDist(p, float2(0.3, 0.3), float2(1.4, 0.3))); d = min(d, segDist(p, float2(1.4, 0.3), float2(2.3, 1.2))); d = min(d, segDist(p, float2(2.3, 1.2), float2(2.3, 3.8))); d = min(d, segDist(p, float2(2.3, 3.8), float2(1.4, 4.7))); d = min(d, segDist(p, float2(1.4, 4.7), float2(0.3, 4.7))); d = min(d, segDist(p, float2(0.3, 4.7), float2(0.3, 0.3))); }
+    else if (ch < 15.5) { d = min(d, segDist(p, float2(2.3, 0.3), float2(0.3, 0.3))); d = min(d, segDist(p, float2(0.3, 0.3), float2(0.3, 4.7))); d = min(d, segDist(p, float2(0.3, 4.7), float2(2.3, 4.7))); d = min(d, segDist(p, float2(0.3, 2.5), float2(1.8, 2.5))); }
+    else if (ch < 16.5) { d = min(d, segDist(p, float2(2.3, 0.3), float2(0.3, 0.3))); d = min(d, segDist(p, float2(0.3, 0.3), float2(0.3, 4.7))); d = min(d, segDist(p, float2(0.3, 2.5), float2(1.8, 2.5))); }
+    else if (ch < 17.5) { d = min(d, segDist(p, float2(2.3, 0.9), float2(1.7, 0.3))); d = min(d, segDist(p, float2(1.7, 0.3), float2(0.9, 0.3))); d = min(d, segDist(p, float2(0.9, 0.3), float2(0.3, 0.9))); d = min(d, segDist(p, float2(0.3, 0.9), float2(0.3, 4.1))); d = min(d, segDist(p, float2(0.3, 4.1), float2(0.9, 4.7))); d = min(d, segDist(p, float2(0.9, 4.7), float2(1.7, 4.7))); d = min(d, segDist(p, float2(1.7, 4.7), float2(2.3, 4.1))); d = min(d, segDist(p, float2(2.3, 4.1), float2(2.3, 2.6))); d = min(d, segDist(p, float2(2.3, 2.6), float2(1.4, 2.6))); }
+    else if (ch < 18.5) { d = min(d, segDist(p, float2(0.3, 4.7), float2(1.3, 0.3))); d = min(d, segDist(p, float2(1.3, 0.3), float2(2.3, 4.7))); d = min(d, segDist(p, float2(0.75, 3.1), float2(1.85, 3.1))); }
+    else if (ch < 19.5) { d = min(d, segDist(p, float2(0.3, 2.4), float2(1.6, 2.4))); d = min(d, segDist(p, float2(1.6, 2.4), float2(2.2, 1.7))); d = min(d, segDist(p, float2(2.2, 1.7), float2(2.2, 0.9))); d = min(d, segDist(p, float2(2.2, 0.9), float2(1.6, 0.3))); d = min(d, segDist(p, float2(1.6, 0.3), float2(0.3, 0.3))); d = min(d, segDist(p, float2(0.3, 0.3), float2(0.3, 4.7))); d = min(d, segDist(p, float2(0.3, 4.7), float2(1.6, 4.7))); d = min(d, segDist(p, float2(1.6, 4.7), float2(2.3, 4.0))); d = min(d, segDist(p, float2(2.3, 4.0), float2(2.3, 3.1))); d = min(d, segDist(p, float2(2.3, 3.1), float2(1.6, 2.4))); }
+    else if (ch < 20.5) { d = min(d, segDist(p, float2(1.0, 0.6), float2(0.8, 4.4))); d = min(d, segDist(p, float2(1.9, 0.6), float2(1.7, 4.4))); d = min(d, segDist(p, float2(0.2, 1.8), float2(2.5, 1.8))); d = min(d, segDist(p, float2(0.1, 3.2), float2(2.4, 3.2))); }
+    return clamp(0.5 + (0.34 - d) * s, 0.0, 1.0);
+}
+
+// "C<octave>" with its top left at the origin, s pixels per font pixel (C3 = MIDI 60)
+float noteLabel(float midiC, float2 p, float s) {
+    float octave = floor(midiC / 12.0 + 0.5) - 2.0;
+    float2 q = p / s;
+    float lit = glyph(10.0, q, s);
+    if (octave < 0.0) {
+        lit = max(lit, glyph(11.0, q - float2(4.0, 0.0), s));
+        lit = max(lit, glyph(-octave, q - float2(8.0, 0.0), s));
+    } else {
+        lit = max(lit, glyph(octave, q - float2(4.0, 0.0), s));
+    }
+    return lit;
+}
+
+float digitCount(float n) {
+    if (n < 9.5) return 1.0;
+    if (n < 99.5) return 2.0;
+    if (n < 999.5) return 3.0;
+    return 4.0;
+}
+
+// digit k (0 = leftmost) of n
+float digitAt(float n, float k) {
+    float places = digitCount(n) - 1.0 - k;
+    return mod(floor(n / pow(10.0, places) + 0.0001), 10.0);
+}
+
+// "num/den" (or "num" when den is 1) with its top left at the origin
+float fractionLabel(float num, float den, float2 p, float s) {
+    float2 q = p / s;
+    if (q.x < -0.6 || q.y < -0.6 || q.y >= 5.6) return 0.0;
+    float c = floor((q.x + 0.6) / 4.0);
+    float2 cell = float2(q.x - c * 4.0, q.y);
+    float nNum = digitCount(num);
+    if (c < nNum) return glyph(digitAt(num, c), cell, s);
+    if (den < 1.5) return 0.0;
+    if (c < nNum + 0.5) return glyph(12.0, cell, s);
+    float k = c - nNum - 1.0;
+    if (k < digitCount(den)) return glyph(digitAt(den, k), cell, s);
+    return 0.0;
+}
+
+// time (0..1 of the length) <-> position on the curve, k = the time scale (0 = straight)
+float timeToX(float t, float k) {
+    if (k > 0.0001) return log(1.0 + k * max(t, 0.0)) / log(1.0 + k);
+    return t;
+}
+float xToTime(float x, float k) {
+    if (k > 0.0001) return (exp(x * log(1.0 + k)) - 1.0) / k;
+    return x;
+}
+float timePerX(float x, float k) {
+    if (k > 0.0001) return log(1.0 + k) * exp(x * log(1.0 + k)) / k;
+    return 1.0;
+}
+
+// a frequency label: 20, 50, 100, 200, 500, 1k, 2k ... with its top left at the origin
+float hzLabel(float hz, float2 p, float s) {
+    float2 q = p / s;
+    if (q.x < -0.6 || q.y < -0.6 || q.y >= 5.6) return 0.0;
+    float n = floor(hz + 0.5);
+    float kilo = 0.0;
+    if (hz > 999.5) { n = floor(hz / 1000.0 + 0.5); kilo = 1.0; }
+    float c = floor((q.x + 0.6) / 4.0);
+    float2 cell = float2(q.x - c * 4.0, q.y);
+    float nd = digitCount(n);
+    if (c < nd) return glyph(digitAt(n, c), cell, s);
+    if (kilo > 0.5 && c < nd + 0.5) return glyph(13.0, cell, s);
+    return 0.0;
+}
+
+// curve value (0..1) -> share of the pitch span, and back; k = the pitch scale (0 = straight)
+// (the bottom 2 % of the curve is the fundamental exactly, as in the voice)
+float shapedOf(float v, float k) {
+    float pv = max(0.0, (v - 0.02) / 0.98);
+    if (k > 0.0001) return log(1.0 + k * pv) / log(1.0 + k);
+    return pv;
+}
+float valueOf(float shaped, float k) {
+    float pv = shaped;
+    if (k > 0.0001) pv = (exp(shaped * log(1.0 + k)) - 1.0) / k;
+    return 0.02 + 0.98 * pv;
+}
+
+// note name (Bitwig's: C3 = MIDI 60) of a MIDI note: letter, sharp, octave; n chars wide
+float letterOf(float pc) {
+    if (pc < 1.5) return 10.0;   // C, C#
+    if (pc < 3.5) return 14.0;   // D, D#
+    if (pc < 4.5) return 15.0;   // E
+    if (pc < 6.5) return 16.0;   // F, F#
+    if (pc < 8.5) return 17.0;   // G, G#
+    if (pc < 10.5) return 18.0;  // A, A#
+    return 19.0;                 // B
+}
+
+float isSharp(float pc) {
+    return (pc > 0.5 && pc < 1.5) || (pc > 2.5 && pc < 3.5) || (pc > 5.5 && pc < 6.5) ||
+           (pc > 7.5 && pc < 8.5) || (pc > 9.5 && pc < 10.5) ? 1.0 : 0.0;
+}
+
+float noteName(float midi, float2 p, float s) {
+    float pc = mod(midi, 12.0);
+    float octave = floor(midi / 12.0) - 2.0;
+    float2 q = p / s;
+    float lit = glyph(letterOf(pc), q, s);
+    float at = 4.0;
+    if (isSharp(pc) > 0.5) { lit = max(lit, glyph(20.0, q - float2(at, 0.0), s)); at += 4.0; }
+    if (octave < 0.0) { lit = max(lit, glyph(11.0, q - float2(at, 0.0), s)); at += 4.0; octave = -octave; }
+    return max(lit, glyph(octave, q - float2(at, 0.0), s));
+}
+
+half4 main(float2 fragCoord) {
+    float W = iResolution.x;
+    float H = iResolution.y;
+    float u = clamp(fragCoord.x / W, 0.0, 1.0);
+
+    float3 b0 = bytes3(audioLow.x);
+    float3 b1 = bytes3(audioLow.y);
+    float3 b2 = bytes3(audioLow.z);
+    float3 b3 = bytes3(audioLow.w);
+    float3 b4 = bytes3(audioMedium.x);
+    float3 b5 = bytes3(audioMedium.y);
+    float3 b6 = bytes3(audioMedium.z);
+    float3 b7 = bytes3(audioMedium.w);
+    float f[11];
+    float a[11];
+    // (pitch view: the pitch curve's shaped value, made a frequency below with the live tune and
+    // amount, v38)
+    f[0] = freqOf(b0.x); f[1] = freqOf(b0.y); f[2] = freqOf(b0.z);
+    f[3] = freqOf(b1.x); f[4] = freqOf(b1.y); f[5] = freqOf(b1.z);
+    f[6] = freqOf(b2.x); f[7] = freqOf(b2.y); f[8] = freqOf(b2.z);
+    f[9] = freqOf(b3.x); f[10] = freqOf(b3.y);
+    a[0] = b3.z; a[1] = b4.x; a[2] = b4.y; a[3] = b4.z; a[4] = b5.x; a[5] = b5.y;
+    a[6] = b5.z; a[7] = b6.x; a[8] = b6.y; a[9] = b6.z; a[10] = b7.x;
+    for (int i = 0; i < 11; i++) { a[i] = a[i] / 255.0; }
+    float head = b7.y;                         // (master display: the click's delay, v61; before, the drive)
+    float clickType = mod(b7.z, 8.0);
+    float clickTone = 200.0 * exp(floor(b7.z / 8.0) / 31.0 * 4.605170186);
+    float nx = floor(audioHigh.x * 16777216.0 + 0.25);
+    float lenP = floor(nx / 8192.0);
+    float restX = nx - lenP * 8192.0;
+    float lenA = floor(restX / 4.0);
+    float ascale = floor((restX - lenA * 4.0) / 2.0);
+    float pLenS = 0.005 * exp(lenP / 2047.0 * 7.377758908);
+    float aLenS = 0.005 * exp(lenA / 2047.0 * 7.377758908);
+    float3 hy = bytes3(audioHigh.y);
+    float3 hz = bytes3(audioHigh.z);
+    float nw = floor(audioHigh.w * 16777216.0 + 0.25);
+    float mpbQ = floor(nw / 8192.0);
+    float restW = nw - mpbQ * 8192.0;
+    float levelQ = floor(restW / 256.0);
+    restW -= levelQ * 256.0;
+    float hpQ = floor(restW / 16.0);
+    float rootMidi = 24.0 + (restW - hpQ * 16.0);
+    float phase0 = hy.x / 255.0;
+    if (MODE > 2.5 && MODE < 3.5) {
+        float midi = floor(rootMidi + 0.5);
+        float wide = 7.0 + 4.0 * isSharp(mod(midi, 12.0));
+        float s = max(1.0, min(H * 0.085, (W - 6.0) / wide));
+        float2 origin = float2(W - (wide - 1.4) * s, H - 5.0 * s) * 0.5;
+        float lit = noteName(midi, fragCoord - origin, s);
+        float3 box = mix(SCREEN_TOP, SCREEN_LOW, fragCoord.y / H);
+        return half4(half3(mix(box, float3(0.86, 0.86, 0.90), lit)), 1.0);
+    }
+    float amount = hy.y / 1.75 + 31.0 - rootMidi;
+    float pitchK = exp(6.908754779 * hy.z / 255.0) - 1.0;
+    float pTimeK = exp(6.908754779 * hz.x / 255.0) - 1.0;
+    float aTimeK = exp(6.908754779 * hz.y / 255.0) - 1.0;
+    // (v70) the click's Length (its curves' span; v1-v69 its decay), log 0.2 .. 200 ms; outside
+    // the click view (the scope, the body's phase gate) drawn as a decay of a fifth of it
+    float clickLen = 0.0002 * exp(hz.z / 255.0 * 6.907755279);
+    float clickDecay = clickLen * 0.2;
+    float clickLevel = levelQ / 31.0;
+    float clickHp = 20.0 * exp(hpQ / 15.0 * 5.991464547);
+    float msPerBeat = max(10.0, mpbQ);
+    float drive = 0.0;   // (v60: the whole kick's drive went)
+    // (v61) seconds, the master display's head (v62: to 15 ms; the click view reads that display too)
+    float clickDelay = (MODE > 1.5 && MODE < 2.5) || MODE > 3.5 ? head / 255.0 * 0.015 : 0.0;
+    {
+        float sv[11];
+        sv[0] = b0.x; sv[1] = b0.y; sv[2] = b0.z; sv[3] = b1.x; sv[4] = b1.y; sv[5] = b1.z;
+        sv[6] = b2.x; sv[7] = b2.y; sv[8] = b2.z; sv[9] = b3.x; sv[10] = b3.y;
+        for (int i = 0; i < 11; i++) { f[i] = 440.0 * exp2((rootMidi + amount * sv[i] / 255.0 - 69.0) / 12.0); }
+    }
+    if (ascale > 0.5) {
+        for (int i = 0; i < 11; i++) { a[i] = a[i] < 0.001 ? 0.0 : exp(6.907755279 * (a[i] - 1.0)); }
+    }
+    float timeK = 0.0;
+    float zoom = 1.0;
+    float lengthS = aLenS;
+    if (MODE < 0.5) { timeK = pTimeK; lengthS = pLenS; }
+    if (MODE > 0.5 && MODE < 1.5) timeK = aTimeK;
+    float zoomY = zoom;
+    if (DETAIL > 1.5) { zoom = DETAIL; zoomY = 1.0; }
+    if (MODE < 1.5) zoom = zoom / X_END;
+    float spanS = lengthS;
+    // (v70) the click view is the click alone, across its curves (as their editor, to X_END)
+    if (MODE > 1.5 && MODE < 2.5) spanS = clamp(clickLen * X_END, 0.0005, 2.0);
+    if (MODE > 3.5) spanS = max(pLenS, aLenS);
+    float beats = spanS * 1000.0 / msPerBeat;
+    float xc = u / zoom;
+    float tn = xToTime(xc, timeK);
+    float dtn = timePerX(xc, timeK) / zoom;
+    float shown = xToTime(1.0 / zoom, timeK);
+    if (MODE > 1.5) { tn = u; dtn = 1.0; shown = 1.0; }
+    float t = u * shown * spanS;
+    // v39: points at x = (k/10)^2 on each curve, put in time with the live lengths and time scales
+    float lP = log(1.0 + pTimeK);
+    float mP = pTimeK > 0.0001 ? lP / pTimeK : 1.0;
+    float eP = pTimeK > 0.0001 ? lP : 0.0;
+    float xp = min(timeToX(t / pLenS, pTimeK), 1.0);
+    float cycles = 0.0;
+    float fu = f[10];
+    for (int k = 0; k < 10; k++) {
+        float x0 = float(k) * float(k) * 0.01;
+        float x1 = float(k + 1) * float(k + 1) * 0.01;
+        float h = x1 - x0;
+        float lr = log(f[k + 1] / f[k]);
+        if (xp > x0) {
+            float ye = min(xp, x1) - x0;
+            float c = lr / h + eP;
+            float base = f[k] * pLenS * mP * exp(x0 * eP);
+            cycles += abs(c * ye) < 0.0001 ? base * ye * (1.0 + 0.5 * c * ye) : base * (exp(c * ye) - 1.0) / c;
+        }
+        if (xp >= x0 && xp <= x1) fu = f[k] * exp(lr * (xp - x0) / h);
+    }
+    if (t > pLenS) { cycles += f[10] * (t - pLenS); fu = f[10]; }
+    float xa = min(timeToX(t / aLenS, aTimeK), 1.0);
+    float ap[13];
+    float up[13];
+    ap[0] = a[0];
+    up[0] = -0.01;
+    for (int i = 0; i < 11; i++) { ap[i + 1] = a[i]; up[i + 1] = float(i) * float(i) * 0.01; }
+    ap[12] = a[10];
+    up[12] = 1.21;
+    float au = a[10];
+    for (int k = 0; k < 10; k++) {
+        float u0 = float(k) * float(k) * 0.01;
+        float u1 = float(k + 1) * float(k + 1) * 0.01;
+        if (xa >= u0 && xa <= u1) {
+            float s = (xa - u0) / (u1 - u0);
+            float p0 = ap[k + 1];
+            float p1 = ap[k + 2];
+            float d0 = (p0 - ap[k]) / (u0 - up[k]);
+            float d1 = (p1 - p0) / (u1 - u0);
+            float d2 = (ap[k + 3] - p1) / (up[k + 3] - u1);
+            float m0 = d0 * d1 <= 0.0 ? 0.0 : 0.5 * (d0 + d1);
+            float m1 = d1 * d2 <= 0.0 ? 0.0 : 0.5 * (d1 + d2);
+            float h = u1 - u0;
+            float s2 = s * s;
+            float s3 = s2 * s;
+            au = (2.0 * s3 - 3.0 * s2 + 1.0) * p0 + (s3 - 2.0 * s2 + s) * h * m0
+               + (3.0 * s2 - 2.0 * s3) * p1 + (s3 - s2) * h * m1;
+            au = clamp(au, min(p0, p1), max(p0, p1));
+        }
+    }
+    if (t > max(pLenS, aLenS)) au = 0.0;
+
+    float mid = H * 0.5;
+    float amp = H * 0.44;
+    float y = (mid - fragCoord.y) / amp;   // -1..1, up = positive
+    float ls = clamp(H / 110.0, 1.4, 2.0);   // label size (pixels per font unit; v34: 1..3 whole pixels)
+
+    float divLit = 0.0;   // the division labels, drawn over the waveform (v35)
+    // ---- background and division grid (follows the curve): bars, beats, 1/8 .. 1/256 ----
+    float vy = fragCoord.y / H;
+    float3 tint = (MODE > 1.5 && MODE < 2.5) ? WAVE : mix(WAVE, WAVE2, u);
+    float3 color = mix(SCREEN_TOP, SCREEN_LOW, vy);
+    float2 cdist = float2((u - 0.35) * 1.6, (vy - 0.5) * 2.0);
+    color += tint * 0.085 * exp(-dot(cdist, cdist));
+    if (mod(floor(fragCoord.y), 3.0) < 0.5) color *= 0.93;   // fine scan lines
+    if (beats > 0.0001) {
+        float pxPerBeat = W / (beats * dtn);
+        float bt = tn * beats;
+        float division = 0.5;
+        float shade = 0.175;
+        for (int k = 0; k < 8; k++) {
+            float spacing = pxPerBeat * division;
+            float d = abs(fract(bt / division + 0.5) - 0.5) * spacing;
+            if (spacing > 6.0 && d < 0.6) color = max(color, float3(shade * 0.62, shade * 0.6, shade * 1.15));
+            division *= 0.5;
+            shade = max(0.10, shade - 0.012);
+        }
+        float dBeat = abs(fract(bt + 0.5) - 0.5) * pxPerBeat;
+        float dBar = abs(fract(bt / 4.0 + 0.5) - 0.5) * 4.0 * pxPerBeat;
+        if (pxPerBeat > 4.0 && dBeat < 0.6) color = max(color, float3(0.16, 0.15, 0.30));
+        if (dBar < 0.8) color = float3(0.27, 0.25, 0.52);
+
+        // the division scale along the top: 1/256 .. 1/2 of a bar, and bars, on the finest level
+        // with room for its text
+        if (fragCoord.y < 9.0 * ls) color = over(color, float3(0.0), 0.45);
+        // each level (1 bar, 1/2 .. 1/1024): the lines either side of this pixel; a line's label
+        // is centred on it, drawn when the line is on the finest level with room for its text
+        float lit = 0.0;
+        float den = 1.0;
+        // (v51) only in the top band: a label lights nothing below 7.6 ls (fractionLabel), and this
+        // loop (11 levels x 2 lines, each four timeToX and an 11-step reduction) ran for every pixel
+        if (fragCoord.y < 9.0 * ls)
+        for (int level = 0; level < 11; level++) {
+            float left = floor(tn * beats / 4.0 * den + 0.0001);
+            for (int side = 0; side < 2; side++) {
+                float index = left + float(side);
+                float lineT = index / den * 4.0 / beats;
+                float lineX = timeToX(lineT, timeK) * zoom * W;
+                float nextX = timeToX((index + 1.0) / den * 4.0 / beats, timeK) * zoom * W;
+                float prevX = timeToX(max(0.0, index - 1.0) / den * 4.0 / beats, timeK) * zoom * W;
+                float halfX = timeToX((index + 0.5) / den * 4.0 / beats, timeK) * zoom * W;
+                if (MODE > 1.5) {
+                    lineX = lineT * W;
+                    nextX = (index + 1.0) / den * 4.0 / beats * W;
+                    prevX = max(0.0, index - 1.0) / den * 4.0 / beats * W;
+                    halfX = (index + 0.5) / den * 4.0 / beats * W;
+                }
+                float num = index;
+                float d = den;
+                for (int k = 0; k < 11; k++) {
+                    if (d > 1.5 && mod(num, 2.0) < 0.5) { num /= 2.0; d /= 2.0; }
+                }
+                float chars = digitCount(num) + (d > 1.5 ? 1.0 + digitCount(d) : 0.0);
+                float wide = (chars * 4.0 - 1.4) * ls;
+                bool room = min(nextX - lineX, lineX - prevX) >= wide + 10.0;
+                bool finest = halfX - lineX < wide + 10.0;
+                if (index > 0.5 && room && (finest || level == 10) && (num < 1.5 || d < 1.5)) {
+                    float x0 = clamp(lineX - wide * 0.5, 3.0, W - wide - 3.0);
+                    lit = max(lit, fractionLabel(num, d, float2(fragCoord.x - x0, fragCoord.y - 2.0 * ls), ls));
+                }
+            }
+            den *= 2.0;
+        }
+        divLit = lit;
+    }
+
+    // ---- pitch view: the frequency scale, at the curve value that plays each frequency ----
+    if (MODE < 0.5 && abs(amount) > 0.25) {
+        float v = 1.0 - fragCoord.y / H / zoomY;
+        float midi = rootMidi + amount * shapedOf(v, pitchK);
+        float midiUp = rootMidi + amount * shapedOf(v + 1.0 / (H * zoomY), pitchK);
+        float semiPerPx = max(0.00001, abs(midiUp - midi));
+        float hzHere = 440.0 * exp2((midi - 69.0) / 12.0);
+        float decade = floor(exp(floor(log(hzHere) / 2.302585093 + 0.00001) * 2.302585093) + 0.5);
+        if (hzHere < 1.0) decade = 1.0;
+        float q = hzHere / decade;
+        float n = floor(q + 0.5);
+        float dLine = abs(midi - (69.0 + 12.0 * log(n * decade / 440.0) / 0.6931471806)) / semiPerPx;
+        float gapPx = 12.0 * log((n + 1.0) / n) / 0.6931471806 / semiPerPx;
+        bool major = (n < 1.5) || (n > 1.5 && n < 2.5) || (n > 4.5 && n < 5.5) || (n > 9.5);
+        if (dLine < 0.6 && (major || gapPx > 5.0)) color = over(color, WAVE, major ? 0.32 : 0.12);
+        // the label of the 1-2-5 frequency at or below this pixel, just above its line
+        float lab = decade;
+        float nextLab = 2.0 * decade;
+        if (q >= 2.0) { lab = 2.0 * decade; nextLab = 5.0 * decade; }
+        if (q >= 5.0) { lab = 5.0 * decade; nextLab = 10.0 * decade; }
+        float labMidi = 69.0 + 12.0 * log(lab / 440.0) / 0.6931471806;
+        float vl = valueOf((labMidi - rootMidi) / amount, pitchK);
+        // room measured between the two label lines (the same for every pixel of a label)
+        float nextMidi = 69.0 + 12.0 * log(nextLab / 440.0) / 0.6931471806;
+        float vn = valueOf(min(1.0, (nextMidi - rootMidi) / amount), pitchK);
+        float room = (vn - vl) * zoomY * H;
+        if (vl >= 0.0 && vl <= 1.0 && room > 7.0 * ls + 2.0) {
+            float yl = (1.0 - vl) * zoomY * H;
+            float top = yl - 6.0 * ls;
+            if (top < 9.0 * ls) top = yl + 2.0;
+            // at the right edge (v35; on the left they ran over the attack and its points)
+            float kilo = lab > 999.5 ? 1.0 : 0.0;
+            float digits = digitCount(kilo > 0.5 ? floor(lab / 1000.0 + 0.5) : floor(lab + 0.5));
+            float x0 = W - ((digits + kilo) * 4.0 - 1.4) * ls - 6.0;
+            float lit = hzLabel(lab, float2(fragCoord.x - x0, fragCoord.y - top), ls);
+            color = over(color, INK, 0.9 * lit);
+        }
+    }
+
+    if (abs(fragCoord.y - mid) < 0.6) color = over(color, tint, 0.22);
+
+    // ---- the body: level envelope and waveform, in real time ----
+    // The colour runs from the attack's to the tail's across the view (as the knobs' LEDs);
+    // the wave is a neon tube: a white-hot core, its colour, a wide bloom, and a lit fill
+    // between it and the axis that brightens towards it (light falling on frosted glass).
+    float3 bodyColor = tint;
+    float strength = 0.75;    // under the curve editor: the curve stays the sharpest line
+    if (MODE > 1.5 && MODE < 2.5) { bodyColor = BODY; strength = 0.4; }
+    // the glow's reach, in pixels, follows the view's size: in the small device view a glow made
+    // for the maximized view smeared the wave (v37: about half as wide there, and dimmer)
+    float bleed = clamp(min(W, H) / 450.0, 0.4, 1.0);
+    float3 hot = mix(bodyColor, float3(1.0), 0.6);
+    float rel = abs(y) / max(au, 0.001);
+    // no outline round the envelope (v29 and earlier drew a lit rim, a halo and a faint fill
+    // there: straight segments between the 11 scanned points, an angular frame round the wave);
+    // the wave and its lit fill show the envelope
+    // the Phase offset fades in as the pitch lands on the fundamental (as the voice)
+    float rootHz = 440.0 * exp2((rootMidi - 69.0) / 12.0);
+    float settle = min(1.0, (rootHz / max(fu, 1.0)) * (rootHz / max(fu, 1.0)));
+    float gate = smoothstep(0.0, clickLen, t - clickDelay);   // (v70: over the click's Length, as the voice)
+    cycles += phase0 * settle * gate;   // v39: after the click, as the voice
+    float perPixel = fu * shown * spanS / W;      // cycles per pixel
+    if (MODE < 1.5) {   // (v70: not in the click view: it shows the click's curves, not the body)
+    if (perPixel > 0.35) {
+        // too dense to draw the cycles: a lit band, glowing towards the envelope, with a
+        // shimmer of the cycles it stands for
+        if (abs(y) <= au) {
+            float shimmer = 0.5 + 0.5 * sin(fragCoord.y * 1.7 + cycles * 0.01);
+            color = over(color, mix(bodyColor * 0.5, bodyColor, rel), (0.30 + 0.45 * rel * rel + 0.08 * shimmer) * strength);
+            color += hot * (0.35 * strength * exp(-(1.0 - rel) * amp / 2.0));
+        }
+    } else {
+        float v0 = sin(6.283185307 * cycles) * au;
+        float v1 = sin(6.283185307 * (cycles + perPixel)) * au;
+        float slope = (v1 - v0) * amp;
+        float d = abs((y - v0) * amp) / sqrt(1.0 + slope * slope);
+        // the lit fill between the wave and the axis
+        if ((y >= 0.0 && y <= v0) || (y <= 0.0 && y >= v0)) {
+            float r = abs(y) / max(abs(v0), 0.001);
+            color = over(color, mix(bodyColor * 0.55, bodyColor, r), (0.16 + 0.62 * r * r) * strength);
+        }
+        // the halo's distance is never less than the distance to the wave's span in this
+        // pixel column (the slope estimate alone streaked the halo on steep slopes)
+        float py = y * amp;
+        float dv = max(0.0, max(min(v0, v1) * amp - py, py - max(v0, v1) * amp));
+        float dh = max(d, dv);
+        color += bodyColor * strength * (0.5 * exp(-dh / (1.0 + 0.8 * bleed)) + 0.2 * bleed * exp(-dh / (7.0 * bleed))
+                                         + 0.06 * bleed * exp(-dh / (22.0 * bleed)));
+        color = over(color, bodyColor, strength * (1.3 - d / 1.0));
+        color = over(color, hot, strength * (1.0 - d / 0.65));
+        // a specular glint on the crests
+        float crest = abs(v0) / max(au, 0.001);
+        color += float3(1.0) * 0.18 * strength * crest * crest * crest * crest * exp(-dh / (0.8 + 0.7 * bleed));
+    }
+
+    }
+
+    // ---- click view (v70): the click from its curves, across its Length ----
+    // the click display sends the click's curves in place of the body's: pitch (bytes 0..10, 0.5 =
+    // as it is, 0 / 1 = -24 / +24 semitones) and level (11..21) at x = 0, 0.1 .. 1
+    if (MODE > 1.5 && MODE < 2.5) {
+        float cp[11];
+        cp[0] = b0.x; cp[1] = b0.y; cp[2] = b0.z; cp[3] = b1.x; cp[4] = b1.y; cp[5] = b1.z;
+        cp[6] = b2.x; cp[7] = b2.y; cp[8] = b2.z; cp[9] = b3.x; cp[10] = b3.y;
+        for (int i = 0; i < 11; i++) { cp[i] = exp2(4.0 * (cp[i] / 255.0 - 0.5)); }   // the rate
+        float seg = clickLen * 0.1;
+        // five samples across the pixel: the noise's span there (min .. max); the noise runs in
+        // its own time, the rate integrated (as the voice's resampler)
+        float dt = spanS / W;
+        float nMin = 10.0;
+        float nMax = -10.0;
+        float env0 = 0.0;
+        for (int s = 0; s < 5; s++) {
+            float ts = t + dt * float(s) * 0.25;
+            float x = ts / seg;
+            float tau = 0.0;
+            float r = 1.0;
+            float e = 0.0;
+            for (int k = 0; k < 10; k++) {
+                float fk = float(k);
+                if (x > fk) {
+                    float w = min(x - fk, 1.0);
+                    tau += (cp[k] + (cp[k] + (cp[k + 1] - cp[k]) * w)) * 0.5 * w * seg;
+                }
+                if (x >= fk && x < fk + 1.0) {
+                    float w = x - fk;
+                    r = cp[k] + (cp[k + 1] - cp[k]) * w;
+                    e = a[k] + (a[k + 1] - a[k]) * w;
+                }
+            }
+            float env = clickLevel * e;
+            float n = clickNoise(tau, clickType, clickTone / max(r, 0.0001), clickHp) * env;
+            if (s == 0) env0 = env;
+            nMin = min(nMin, n);
+            nMax = max(nMax, n);
+        }
+        float lo = nMin * amp - 0.7;
+        float hi = nMax * amp + 0.7;
+        float py = y * amp;
+        float dn = max(0.0, max(lo - py, py - hi));
+        float3 clickColor = mix(WAVE, WAVE2, clamp(t / max(clickLen * 0.8, 0.0001), 0.0, 1.0));
+        if (abs(y) <= env0) color = over(color, clickColor, 0.05 + 0.12 * abs(y) / max(env0, 0.001));
+        color += clickColor * (0.30 * exp(-dn / (1.0 + bleed)) + 0.10 * bleed * exp(-dn / (8.0 * bleed)));
+        if (py >= lo && py <= hi) color = over(color, mix(clickColor, float3(1.0), 0.25), 0.92);
+        float de = min(abs(y - env0), abs(y + env0)) * amp;
+        color = over(color, mix(clickColor, float3(1.0), 0.3), 0.6 * (1.0 - de));
+        color += clickColor * 0.12 * exp(-de / (4.0 * bleed));
+    }
+
+    // ---- master: an oscilloscope of the kick, body and click summed, after the drive ----
+    // (v39; the mid saturator and the compressor are not drawn) Drawn as the body in the other
+    // views (v41): a neon tube with a white-hot core, a halo and a lit fill to the axis, a glint
+    // on the crests; too dense to draw the cycles, a lit band to the envelope. Six samples across
+    // the pixel give the trace's span there.
+    if (MODE > 3.5) {
+        float dt = spanS / W;
+        float g = 1.0 + drive * 9.0;
+        float wet = clamp(drive * 5.0, 0.0, 1.0);
+        float tg = 1.0 - 2.0 / (exp(2.0 * g) + 1.0);
+        float sMin = 10.0;
+        float sMax = -10.0;
+        float v0 = 0.0;
+        float v6 = 0.0;
+        float env0 = 0.0;
+        for (int k = 0; k < 7; k++) {
+            float ts = t + dt * float(k) / 6.0 - clickDelay;   // (v61: the click's own time)
+            float bv = sin(6.283185307 * (cycles + fu * dt * float(k) / 6.0)) * au;
+            float env = (ts < 0.0 || ts > clickLen) ? 0.0 : clickLevel * exp(-ts / clickDecay);   // (v70: within its Length)
+            float sv = bv + clickNoise(ts, clickType, clickTone, clickHp) * env;
+            float sat = (1.0 - 2.0 / (exp(2.0 * clamp(sv * g, -12.0, 12.0)) + 1.0)) / tg;
+            sv = sv + wet * (sat - sv);
+            if (k == 0) v0 = sv;
+            if (k == 6) v6 = sv;
+            if (k == 0) env0 = env;
+            sMin = min(sMin, sv);
+            sMax = max(sMax, sv);
+        }
+        // the envelope after the drive (the body's level through the saturation)
+        float satA = (1.0 - 2.0 / (exp(2.0 * clamp(au * g, -12.0, 12.0)) + 1.0)) / tg;
+        float auM = max(au + wet * (satA - au), 0.001);
+        float relM = abs(y) / auM;
+        float3 hotM = mix(bodyColor, float3(1.0), 0.6);
+        float py = y * amp;
+        if (perPixel > 0.35) {
+            if (abs(y) <= auM) {
+                float shimmer = 0.5 + 0.5 * sin(fragCoord.y * 1.7 + cycles * 0.01);
+                color = over(color, mix(bodyColor * 0.5, bodyColor, relM), (0.30 + 0.45 * relM * relM + 0.08 * shimmer) * strength);
+                color += hotM * (0.35 * strength * exp(-(1.0 - relM) * amp / 2.0));
+            }
+        } else {
+            if ((y >= 0.0 && y <= v0) || (y <= 0.0 && y >= v0)) {
+                float r = abs(y) / max(abs(v0), 0.001);
+                color = over(color, mix(bodyColor * 0.55, bodyColor, r), (0.16 + 0.62 * r * r) * strength);
+            }
+        }
+        // the trace: the core from the distance to the line through this pixel's two ends,
+        // measured across it (anti-aliased as the body in the other views; v41 lit the column's
+        // whole span hard and looked pixelated, v42); the halo from the span (the click's noise)
+        float slopeM = (v6 - v0) * amp;
+        float d = abs(py - v0 * amp) / sqrt(1.0 + slopeM * slopeM);
+        float dv = max(0.0, max(sMin * amp - py, py - sMax * amp));
+        float dh = max(d, dv);
+        color += bodyColor * strength * (0.5 * exp(-dh / (1.0 + 0.8 * bleed)) + 0.2 * bleed * exp(-dh / (7.0 * bleed))
+                                         + 0.06 * bleed * exp(-dh / (22.0 * bleed)));
+        if (perPixel <= 0.35) {
+            // where the click's noise is loud next to the body, its span stays lit, its edge soft
+            float noisy = clamp(env0 * 4.0 / max(au, 0.05), 0.0, 1.0);
+            float dc = mix(d, min(d, dv + 0.35), noisy);
+            color = over(color, bodyColor, strength * clamp(1.3 - dc, 0.0, 1.0));
+            color = over(color, hotM, strength * clamp(1.0 - dc / 0.65, 0.0, 1.0));
+            float crest = abs(v0) / auM;
+            color += float3(1.0) * 0.18 * strength * crest * crest * crest * crest * exp(-dh / (0.8 + 0.7 * bleed));
+        }
+    }
+
+    color = over(color, float3(0.0), 0.55 * min(1.0, divLit * 3.0));
+    color = over(color, INK, divLit);
+
+    // ---- playhead, where the curve is being read ----
+    if (head < 254.5 && MODE < 1.5) {   // (v62: not in the click view either: its head is the delay)
+        float hf = head / 250.0 * lengthS / spanS;   // (not in master: no head)
+        float hxp = timeToX(hf, timeK) * zoom * W;
+        if (MODE > 1.5) hxp = hf * W;
+        color = over(color, float3(0.92), 0.8 * (1.0 - abs(fragCoord.x - hxp)));
+    }
+    float vx = abs(u - 0.5) * 2.0;
+    float sheen = clamp(1.0 - (u * 0.9 + vy * 1.6), 0.0, 1.0);
+    color += float3(0.55, 0.55, 0.75) * 0.045 * sheen * sheen;
+    color *= (1.0 - 0.18 * vx * vx * vx) * (1.0 - 0.22 * pow(abs(vy - 0.5) * 2.0, 3.0));
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak > 0.8) color *= (0.8 + (1.0 - exp(-(peak - 0.8) * 2.2)) * 0.2) / peak;
+    return half4(half3(color), 1.0);
+}

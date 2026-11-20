@@ -1,0 +1,174 @@
+component kickforge_display_@NAME@
+{
+    // Keeps 11 points of the kick's curves for the @NAME@ waveform drawing, from the phase
+    // core's idle scan (v39: at (k/10)^2 across the curves, the same for every tab), and packs
+    // them with the settings for the SkSL panel. A float carries 24 bits exactly (n / 2^24):
+    //   lane0, lane1: f0..f10, a0..a10 (a byte each), then a byte "head" and a byte "x"
+    //     f = the pitch curve's shaped value (0..1 of root .. top, after the pitch scale; the
+    //       shader makes the frequency with the live tune and amount, v38)
+    //     a = the amp curve's value, as is (the shader applies the amp scale, v38)
+    //     head = the playhead (0..250 of this tab's length, 255 = not playing); the master
+    //       display (@MASTER@ = 1): the click's delay instead (v61; v39-v59 the drive)
+    //     x = click tone (5 bits, log) * 8 + click type (3 bits)
+    //   lane2.x: pitch length (11 bits, log 5 ms .. 8 s) | amp length (11 bits) | amp scale (1) | 0
+    //   lane2.y: start phase | pitch amount (semitones x1.75) | pitch scale (bytes)
+    //   lane2.z: pitch time scale | amp time scale | click decay (log 0.2 .. 200 ms) (bytes)
+    //   lane2.w: ms per beat (11 bits) | click level (5) | click low cut (4, log) | root - C0 (4)
+    // (v39: the lengths and time scales go to the shader, which puts the points in time with
+    // them: turning those no longer redraws the waveform point by point over a sweep)
+    audio_inport f32 pitch_curve = 0.0;
+    audio_inport f32 amp_curve = 0.0;
+    audio_inport f32<4> ctl;
+    audio_inport f32 tune_hz = 49.0;
+    audio_inport f32 pitch_amount = 60.0;
+    audio_inport f32 start_phase = 0.0;
+    audio_inport f32 ms_per_beat = 500.0;
+    audio_inport f32 pitch_scale = 0.301;
+    value_inport i32 amp_scale = 0;
+    value_inport i32 click_type = 0;
+    audio_inport f32 click_level = 0.3;
+    audio_inport f32 click_decay = 0.006;
+    audio_inport f32 click_tone = 6000.0;
+    audio_inport f32 click_hp = 300.0;
+    audio_inport f32 pitch_time_scale = 0.668;
+    audio_inport f32 amp_time_scale = 0.347;
+    audio_inport f32 click_delay = 0.0;     // (v61) seconds, 0..0.015: the master display sends it as its head
+    value_inport i32 fx_on = 1;             // (v49) 0: the FX bypassed, the scope drawn undriven
+    // (v70) the click's curves, as the phase core sweeps them (21 points, x = k / 20): the click
+    // display (@CLICK@ = 1) keeps the even ones, x = 0, 0.1 .. 1, in place of the body's
+    audio_inport f32 click_pitch_curve = 0.5;
+    audio_inport f32 click_amp_curve = 1.0;
+    audio_inport f32<2> click_ctl;
+
+    audio_outport f32<4> lane0;
+    audio_outport f32<4> lane1;
+    audio_outport f32<4> lane2;
+
+    f32[11] fb;
+    f32[11] ab;
+    // (v51) the lanes are worked out every DECIMATE samples and held between (before: every
+    // sample, a dozen exp / log in each of the three display cores); a scan point's settled window
+    // is 128 samples, read 8 times, and the play head moves on every 0.36 ms (44.1 kHz)
+    i32 tick = 0;
+    f32<4> held0;
+    f32<4> held1;
+    f32<4> held2;
+
+    f32 limit(f32 value, f32 minimum, f32 maximum)
+    {
+        if (value < minimum)
+            return minimum;
+        if (value > maximum)
+            return maximum;
+        return value;
+    }
+
+    f32 q8(f32 x)
+    {
+        return floor((limit(x, 0.0, 1.0) * 255.0) + 0.5);
+    }
+
+    f32 pack3(f32 a, f32 b, f32 c)
+    {
+        return ((a * 65536.0) + (b * 256.0) + c) * 0.000000059604644775390625;
+    }
+
+    // x (0..1) on 0 .. levels, rounded
+    f32 qn(f32 x, f32 levels)
+    {
+        return floor((limit(x, 0.0, 1.0) * levels) + 0.5);
+    }
+
+    process
+    {
+        if (tick == 0)
+        {
+            f32 k_pitch = limit(pitch_curve, 0.0, 1.0);
+            f32 k_amp = limit(amp_curve, 0.0, 1.0);
+            f32<4> c = ctl;
+            f32 k_tune = limit(tune_hz, 5.0, 1000.0);
+            f32 k_amount = limit(pitch_amount, 0.0, 144.0);
+            f32 k_phase = limit(start_phase, 0.0, 360.0);
+            f32 k_mpb = limit(ms_per_beat, 10.0, 65535.0);
+            f32 k_scale = limit(pitch_scale, 0.0, 1.0);
+            f32 k_curve = exp(6.908754779 * k_scale) - 1.0;
+            f32 k_norm = 1.0 / log(1.0 + fmax(k_curve, 0.0001));
+            i32 k_ascale = amp_scale;
+            if (@CLICK@ == 1)
+                k_ascale = 0;   // (the click's amp curve is its level, as is)
+            i32 k_type = click_type;
+            f32 k_level = limit(click_level, 0.0, 1.0);
+            f32 k_decay = limit(click_decay, 0.0002, 0.2);
+            f32 k_tone = limit(click_tone, 200.0, 20000.0);
+            f32 k_hp = limit(click_hp, 20.0, 8000.0);
+
+            f32 state = c[0];
+            f32 p_len = fmax(1.0, c[2]);
+            f32 a_len = fmax(1.0, c[3]);
+            f32 span = fmax(1.0, c[2 + @TAB@]);
+            f32<2> cc = click_ctl;
+            f32 half = cc[0] * 0.5;
+            if ((@CLICK@ == 1) && (cc[1] > 0.5) && ((half - floor(half)) < 0.25))
+            {
+                i32 j = cast(floor(half + 0.25), i32);
+                if ((j >= 0) && (j < 11))
+                {
+                    fb[j] = q8(click_pitch_curve);
+                    ab[j] = q8(click_amp_curve);
+                }
+            }
+            if ((@CLICK@ == 0) && (state < -0.5) && (c[1] > 0.5))
+            {
+                i32 k = cast(floor(0.5 - state - 1.0), i32);
+                if ((k >= 0) && (k < 11))
+                {
+                    // the bottom 2 % of the curve is the fundamental exactly (a landing zone: moving the
+                    // last points sideways never retunes the body)
+                    f32 pv = fmax(0.0, (k_pitch - 0.02) * 1.0204081633);
+                    f32 shaped = pv;
+                    if (k_curve > 0.0001)
+                        shaped = log(1.0 + (k_curve * pv)) * k_norm;
+                    fb[k] = q8(shaped);
+                    ab[k] = q8(k_amp);
+                }
+            }
+            f32 head = 255.0;
+            if (state > 0.5)
+                head = floor((limit(c[1] / span, 0.0, 1.0) * 250.0) + 0.5);
+            if (@MASTER@ == 1)
+            {
+                head = q8(limit(click_delay, 0.0, 0.015) * 66.66666667);   // (v61: the click's delay, v62 to 15 ms; v39-v59 the drive)
+            }
+
+            f32 midi = 69.0 + (17.312340490667 * log(k_tune / 440.0));
+            f32 root4 = floor(limit(midi - 24.0, 0.0, 15.0) + 0.5);
+            f32 amount2 = floor((k_amount * 1.75) + 0.5);   // 0..252
+            // (v62: three bits for the type: the 808 hat, 8, drawn as the 909's, 6)
+            i32 d_type = k_type;
+            if (d_type > 7)
+                d_type = 6;
+            f32 x_byte = (qn(log(k_tone / 200.0) / 4.605170186, 31.0) * 8.0) + cast(d_type, f32);
+            f32 len_p = qn(log(p_len / 5.0) / 7.377758908, 2047.0);
+            f32 len_a = qn(log(a_len / 5.0) / 7.377758908, 2047.0);
+            f32 lx = ((len_p * 8192.0) + (len_a * 4.0) + (cast(k_ascale, f32) * 2.0)) * 0.000000059604644775390625;
+            f32 mpb = floor(limit(k_mpb, 10.0, 2047.0) + 0.5);
+            f32 lw = ((mpb * 8192.0) + (qn(k_level, 31.0) * 256.0) + (qn(log(k_hp / 20.0) / 5.991464547, 15.0) * 16.0)
+                      + root4) * 0.000000059604644775390625;
+
+            held0 = <pack3(fb[0], fb[1], fb[2]), pack3(fb[3], fb[4], fb[5]),
+                     pack3(fb[6], fb[7], fb[8]), pack3(fb[9], fb[10], ab[0])>;
+            held1 = <pack3(ab[1], ab[2], ab[3]), pack3(ab[4], ab[5], ab[6]),
+                     pack3(ab[7], ab[8], ab[9]), pack3(ab[10], head, x_byte)>;
+            held2 = <lx, pack3(q8(k_phase / 360.0), amount2, q8(k_scale)),
+                     pack3(q8(limit(pitch_time_scale, 0.0, 1.0)), q8(limit(amp_time_scale, 0.0, 1.0)),
+                           q8(log(k_decay / 0.0002) / 6.907755279)),
+                     lw>;
+        }
+        tick = tick + 1;
+        if (tick >= 16)
+            tick = 0;
+        lane0 = held0;
+        lane1 = held1;
+        lane2 = held2;
+    }
+}

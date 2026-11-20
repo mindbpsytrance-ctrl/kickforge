@@ -1,0 +1,774 @@
+component kickforge_voice
+{
+    event_inport NoteEvent note_in
+    {
+        if ((note_in.key >= 0) && (note_in.key < 128))
+        {
+            if (note_in.type == note_in.NOTE_ON)
+            {
+                pending_key = note_in.key;
+                pending_velocity = note_in.v;
+                pending_trigger = pending_trigger + 1;
+            }
+        }
+    }
+
+    // Order must match the document's nitro_inputs.
+    value_inport i32 keytrack = 0;          // 0 = off, 1 = on
+    audio_inport f32 pitch_curve = 0.0;     // native pitch curve output, 0..1
+    audio_inport f32 amp_curve = 0.0;       // native amp curve output, 0..1
+    audio_inport f32<4> ctl;                // phase core: <state (1 = playing), ms, p len, a len>
+    audio_inport f32 tune_hz = 49.0;        // phase core: root of the body, Hz
+    value_inport i32 click_type = 0;        // 0 white, 1 pink, 2 brown, 3 blue, 4 violet, 5 crackle, 6 909 hat (v62; before, an impulse), 7 grey, 8 808 hat (v62), 9 606 hat (v63)
+    audio_inport f32 pitch_scale = 0.301;   // 0..1: 0 = every octave the same height, up = more room for the highs
+    value_inport i32 amp_scale = 0;         // 0 Lin, 1 dB
+    // (v70) the click's own curves, swept by the phase core (click_ctl = <point k of 21, settled>):
+    // kept in ctab_p / ctab_a and played from there, sample by sample
+    audio_inport f32 click_pitch_curve = 0.5;   // 0..1 = -24 .. +24 semitones
+    audio_inport f32 click_amp_curve = 1.0;     // 0..1, the click's level across its length
+    audio_inport f32<2> click_ctl;
+    audio_inport f32 pitch_amount = 60.0;   // semitones at curve value 1
+    audio_inport f32 start_phase = 0.0;     // degrees
+    audio_inport f32 click_level = 0.3;     // 0..1
+    audio_inport f32 click_decay = 0.03;    // seconds: (v70) the click's Length (its curves' span; v1-v69 an exponential decay's time)
+    audio_inport f32 click_tone = 6000.0;   // Hz, low-pass
+    audio_inport f32 click_hp = 300.0;      // Hz, high-pass
+    audio_inport f32 velocity = 0.5;        // 0..1 velocity sensitivity
+    audio_inport f32 level = 0.8;           // 0..1
+    audio_inport f32 mid_drive = 0.0;       // 0..1: saturation of the mids only (v39; "Drive" since v60, the whole-kick drive gone)
+    audio_inport f32 body_comp = 0.0;       // 0..1: the compressor (v40; v60: last in the chain, on the whole kick)
+    audio_inport f32 eq_low = 1.0;          // linear gain, 0.178..5.62 (-15..15 dB): low shelf, 80 Hz (v58; v60: held linear)
+    audio_inport f32 eq_mid = 1.0;          // linear gain: mid bell, 400 Hz, its Q narrowing with the gain (v58)
+    audio_inport f32 eq_high = 1.0;         // linear gain: high shelf, 5 kHz (v58)
+    audio_inport f32 click_delay = 0.0;     // seconds, 0..0.015: the click starts this late (v61; v62: 5 -> 15 ms)
+    value_inport i32 fx_on = 1;             // 0 = the FX tab's Drive, EQ and Comp bypassed (v49, v58, v60)
+
+    audio_outport f32<2> out;
+
+    i32 runtime_magic = 0;
+    i32 pending_trigger = 0;
+    i32 handled_trigger = 0;
+    i32 pending_key = 60;
+    f32 pending_velocity = 1.0;
+
+    bool started = false;
+    f32 time_s = 0.0;
+    f32 phase = 0.0;
+    f32 key_ratio = 1.0;
+    f32 velocity_gain = 1.0;
+    f32 tail = 0.0;
+    f32 last_out = 0.0;
+    // v40: zero-crossing ends. When the kick ends (its length is over) or a new note cuts it, its
+    // body plays on as it was (pitch, level and phase held) to its next zero crossing, at most
+    // half a cycle, and stops exactly there: no cut, no click, no tail. A new kick starts at once,
+    // its body from zero (sin 0), over the old one's last half cycle.
+    f32 last_body = 0.0;
+    f32 last_gain = 0.0;
+    f32 last_freq = 50.0;
+    f32 last_offset = 0.0;
+    // the body's compressor (v40): a peak follower on the body (instant attack, 60 ms release),
+    // 3:1 over a threshold of 0 .. -24 dB (the knob), half the attack's reduction made up: the
+    // attack comes down, the tail comes up, the waveform evens out. Reset on every hit.
+    f32 comp_env = 0.0;
+    f32 last_comp = 1.0;
+    bool ring = false;
+    f32 ring_phase = 0.0;
+    f32 ring_freq = 50.0;
+    f32 ring_gain = 0.0;
+    f32 ring_offset = 0.0;
+    f32 ring_prev = 0.0;
+    f32 ring_vel = 1.0;
+    f32 ring_time = 0.0;
+    // mid saturator (v39): two 2-pole low-passes split the kick into the low band (the
+    // fundamental, up to 2.5 x the root), the mids and the highs (from 5 kHz); only the mids
+    // saturate. The bands sum back to the signal exactly when the saturator is off.
+    f32 xover = 120.0;
+    f32 lo1 = 0.0;
+    f32 lo2 = 0.0;
+    f32 mi1 = 0.0;
+    f32 mi2 = 0.0;
+
+    // click noise state, all reset on every hit so each hit sounds the same
+    i32 noise_state = 22222;
+    f32 white_prev = 0.0;
+    f32 pink_prev = 0.0;
+    f32 p0 = 0.0;
+    f32 p1 = 0.0;
+    f32 p2 = 0.0;
+    f32 p3 = 0.0;
+    f32 p4 = 0.0;
+    f32 p5 = 0.0;
+    f32 p6 = 0.0;
+    f32 brown = 0.0;
+    f32 grey_hi = 0.0;
+    f32 grey_lo = 0.0;
+    // (v62) the hats: six square oscillators each (phases, reset on every hit), a two-pole high-pass
+    f32 q0 = 0.0;
+    f32 q1 = 0.0;
+    f32 q2 = 0.0;
+    f32 q3 = 0.0;
+    f32 q4 = 0.0;
+    f32 q5 = 0.0;
+    f32 hat1 = 0.0;
+    f32 hat2 = 0.0;
+    f32 c_hat = -1.0;
+    f32 c_khat = 0.0;
+    f32 lp1 = 0.0;
+    f32 lp2 = 0.0;
+    f32 hp_lp = 0.0;
+    // (v70) the click's curves (21 points each) and its resampler (the pitch curve plays the
+    // source faster or slower, as a sample transposed: c_prev .. c_cur, c_acc between them)
+    f32[21] ctab_p;
+    f32[21] ctab_a;
+    bool ctab_start = false;
+    bool ctab_ok = false;
+    f32 c_acc = 0.0;
+    f32 c_prev = 0.0;
+    f32 c_cur = 0.0;
+
+    // (v51) coefficients cached, recomputed only when their parameter (or the sample rate) changes:
+    // before, a dozen exp / log a sample for values that hardly ever move
+    f32 c_sr = 0.0;
+    f32 c_scale = -1.0;
+    f32 c_curve = 0.0;
+    f32 c_norm = 1.0;
+    f32 c_tone = -1.0;
+    f32 c_kl = 0.0;
+    f32 c_hp = -1.0;
+    f32 c_kh = 0.0;
+    f32 c_xover = -1.0;
+    f32 c_kx = 0.0;
+    f32 c_km = 0.0;
+    f32 c_ghi = 0.0;
+    f32 c_glo = 0.0;
+    f32 c_rel = 0.0;
+    f32 c_base = -1.0;
+    f32 c_base_st = 0.0;
+    // (v58) the EQ: three biquads (transposed direct form II) after the drives, console-style
+    // curves: second-order shelves a little under-damped (Q 0.9: a slight dip before a boost, a
+    // bump before a cut), the bell's Q proportional to its gain (0.6 at 0 dB .. 2.1 at 15 dB).
+    // Coefficients recomputed when a gain (or the sample rate) changes; at 0 dB a band is exact unity.
+    f32 c_eql = 99.0;
+    f32 c_eqm = 99.0;
+    f32 c_eqh = 99.0;
+    f32 lb0 = 1.0;
+    f32 lb1 = 0.0;
+    f32 lb2 = 0.0;
+    f32 la1 = 0.0;
+    f32 la2 = 0.0;
+    f32 mb0 = 1.0;
+    f32 mb1 = 0.0;
+    f32 mb2 = 0.0;
+    f32 ma1 = 0.0;
+    f32 ma2 = 0.0;
+    f32 hb0 = 1.0;
+    f32 hb1 = 0.0;
+    f32 hb2 = 0.0;
+    f32 ha1 = 0.0;
+    f32 ha2 = 0.0;
+    f32 lz1 = 0.0;
+    f32 lz2 = 0.0;
+    f32 mz1 = 0.0;
+    f32 mz2 = 0.0;
+    f32 hz1 = 0.0;
+    f32 hz2 = 0.0;
+
+    f32 limit(f32 value, f32 minimum, f32 maximum)
+    {
+        if (value < minimum)
+            return minimum;
+        if (value > maximum)
+            return maximum;
+        return value;
+    }
+
+    f32 fast_tanh(f32 value)
+    {
+        f32 x = limit(value, -3.0, 3.0);
+        f32 x2 = x * x;
+        return (x * (27.0 + x2)) / (27.0 + (9.0 * x2));
+    }
+
+    f32 next_noise()
+    {
+        noise_state = (noise_state * 1664525) + 1013904223;
+        f32 value = cast(noise_state, f32) * 0.0000000004656612873;
+        return value;
+    }
+
+    // (v70) the click's source, one sample (the noises and the hats; v62-v69 inline in process)
+    f32 click_source(i32 k_type, f32 sr)
+    {
+        f32 white = next_noise();
+        p0 = (0.99886 * p0) + (white * 0.0555179);
+        p1 = (0.99332 * p1) + (white * 0.0750759);
+        p2 = (0.96900 * p2) + (white * 0.1538520);
+        p3 = (0.86650 * p3) + (white * 0.3104856);
+        p4 = (0.55000 * p4) + (white * 0.5329522);
+        p5 = (-0.7616 * p5) - (white * 0.0168980);
+        f32 pink = (p0 + p1 + p2 + p3 + p4 + p5 + p6 + (white * 0.5362)) * 0.11;
+        p6 = white * 0.115926;
+        brown = (brown + (0.02 * white)) / 1.02;
+        f32 source = white;
+        if (k_type == 1)
+            source = pink * 2.5;
+        if (k_type == 2)
+            source = brown * 3.5;
+        if (k_type == 3)
+            source = (pink - pink_prev) * 3.0;
+        if (k_type == 4)
+            source = (white - white_prev) * 0.5;
+        if (k_type == 5)
+        {
+            source = 0.0;
+            if (fabs(white) > 0.96)
+                source = white;
+        }
+        // grey: white noise shaped to sound even to the ear (an inverse equal-loudness curve,
+        // roughly): the band where hearing is most sensitive (about 1.2 .. 5 kHz) taken down,
+        // the lows brought up
+        grey_hi = grey_hi + (c_ghi * (white - grey_hi));
+        grey_lo = grey_lo + (c_glo * (white - grey_lo));
+        if (k_type == 7)
+            source = (white - (0.8 * (grey_hi - grey_lo)) + (brown * 2.0)) * 0.8;
+        // (v62) the hats, simulated: six square oscillators at clashing, inharmonic pitches (the
+        // classic analogue hat's metal), high-passed at 7 kHz; the 909's has ring-modulated
+        // pairs higher up, mixed with noise and cut to 6 bits, as its sample was
+        if ((k_type == 6) || (k_type == 8) || (k_type == 9))
+        {
+            if (sr != c_hat)
+            {
+                c_hat = sr;
+                c_khat = 1.0 - exp(-6.283185307179586 * 7000.0 / sr);
+            }
+            f32 metal = 0.0;
+            if (k_type == 8)
+            {
+                q0 = q0 + (205.3 / sr);
+                q1 = q1 + (304.4 / sr);
+                q2 = q2 + (369.6 / sr);
+                q3 = q3 + (522.7 / sr);
+                q4 = q4 + (540.0 / sr);
+                q5 = q5 + (800.0 / sr);
+            }
+            else if (k_type == 9)
+            {
+                // (v63) the 606's: its own six squares, a little higher and closer, thinner
+                q0 = q0 + (245.0 / sr);
+                q1 = q1 + (306.0 / sr);
+                q2 = q2 + (365.0 / sr);
+                q3 = q3 + (415.0 / sr);
+                q4 = q4 + (437.0 / sr);
+                q5 = q5 + (619.0 / sr);
+            }
+            else
+            {
+                q0 = q0 + (1047.0 / sr);
+                q1 = q1 + (1481.0 / sr);
+                q2 = q2 + (1820.0 / sr);
+                q3 = q3 + (2385.0 / sr);
+                q4 = q4 + (2797.0 / sr);
+                q5 = q5 + (3519.0 / sr);
+            }
+            q0 = q0 - floor(q0);
+            q1 = q1 - floor(q1);
+            q2 = q2 - floor(q2);
+            q3 = q3 - floor(q3);
+            q4 = q4 - floor(q4);
+            q5 = q5 - floor(q5);
+            f32 s0 = 1.0;
+            f32 s1 = 1.0;
+            f32 s2 = 1.0;
+            f32 s3 = 1.0;
+            f32 s4 = 1.0;
+            f32 s5 = 1.0;
+            if (q0 > 0.5)
+                s0 = -1.0;
+            if (q1 > 0.5)
+                s1 = -1.0;
+            if (q2 > 0.5)
+                s2 = -1.0;
+            if (q3 > 0.5)
+                s3 = -1.0;
+            if (q4 > 0.5)
+                s4 = -1.0;
+            if (q5 > 0.5)
+                s5 = -1.0;
+            if (k_type == 8)
+                metal = (s0 + s1 + s2 + s3 + s4 + s5) / 6.0;
+            else if (k_type == 9)   // (v63) with a breath of noise: the 606's is airier
+                metal = (0.7 * (s0 + s1 + s2 + s3 + s4 + s5) / 6.0) + (0.3 * white);
+            else
+                metal = (0.5 * ((s0 * s1) + (s2 * s3) + (s4 * s5)) / 3.0) + (0.5 * white);
+            hat1 = hat1 + (c_khat * (metal - hat1));
+            hat2 = hat2 + (c_khat * (hat1 - hat2));
+            source = (metal - hat2) * 2.2;
+            if (k_type == 6)
+                source = floor((source * 32.0) + 0.5) * 0.03125;
+        }
+        white_prev = white;
+        pink_prev = pink;
+        return source;
+    }
+
+    // hand the playing body to the ring-out (it carries on from the next sample, where the body
+    // would have)
+    void ring_out()
+    {
+        ring = (fabs(last_body) > 0.0000001) && (last_gain > 0.0000001);
+        ring_phase = phase;
+        ring_freq = last_freq;
+        ring_gain = last_gain;
+        ring_offset = last_offset;
+        ring_prev = last_body;
+        ring_vel = velocity_gain;
+        ring_time = 0.0;
+        last_body = 0.0;
+    }
+
+    reset
+    {
+        runtime_magic = 0;
+    }
+
+    process
+    {
+        f32 sr = EC.samplerate;
+        // Read every port once into a local.
+        f32 k_pitch = limit(pitch_curve, 0.0, 1.0);
+        f32 k_amp = limit(amp_curve, 0.0, 1.0);
+        f32<4> k_ctl = ctl;
+        bool k_playing = k_ctl[0] > 0.5;
+        f32 k_tune = limit(tune_hz, 5.0, 1000.0);
+        i32 k_type = click_type;
+        if (sr != c_sr)
+        {
+            c_sr = sr;
+            c_km = 1.0 - exp(-6.283185307179586 * 5000.0 / sr);
+            c_ghi = 1.0 - exp(-6.283185307179586 * 5000.0 / sr);
+            c_glo = 1.0 - exp(-6.283185307179586 * 1200.0 / sr);
+            c_rel = exp(-1.0 / (0.06 * sr));
+            c_tone = -1.0;
+            c_hp = -1.0;
+            c_xover = -1.0;
+            c_eql = 99.0;
+            c_eqm = 99.0;
+            c_eqh = 99.0;
+        }
+        // pitch scale: shaped = log(1 + k v) / log(1 + k), k = 1001^scale - 1 (0 = straight)
+        f32 k_scale_in = limit(pitch_scale, 0.0, 1.0);
+        if (k_scale_in != c_scale)
+        {
+            c_scale = k_scale_in;
+            c_curve = exp(6.908754779 * k_scale_in) - 1.0;
+            c_norm = 1.0 / log(1.0 + fmax(c_curve, 0.0001));
+        }
+        f32 k_curve = c_curve;
+        f32 k_norm = c_norm;
+        i32 k_ascale = amp_scale;
+        f32 k_amount = limit(pitch_amount, 0.0, 144.0);
+        f32 k_phase = limit(start_phase, 0.0, 360.0);
+        f32 k_click_level = limit(click_level, 0.0, 1.0);
+        f32 k_click_len = limit(click_decay, 0.001, 0.2);   // (v70: the Length)
+        // (v70) keep the click's curves as the phase core sweeps them
+        f32<2> k_cc = click_ctl;
+        i32 k_ck = cast(floor(k_cc[0] + 0.5), i32);
+        if ((k_cc[1] > 0.5) && (k_ck >= 0) && (k_ck < 21))
+        {
+            ctab_p[k_ck] = limit(click_pitch_curve, 0.0, 1.0);
+            ctab_a[k_ck] = limit(click_amp_curve, 0.0, 1.0);
+            if (k_ck == 0)
+                ctab_start = true;
+            if ((k_ck == 20) && ctab_start)
+                ctab_ok = true;
+        }
+        f32 k_click_tone = limit(click_tone, 50.0, sr * 0.45);
+        f32 k_click_hp = limit(click_hp, 10.0, sr * 0.45);
+        f32 k_click_delay = limit(click_delay, 0.0, 0.015);
+        f32 k_velocity = limit(velocity, 0.0, 1.0);
+        f32 k_level = limit(level, 0.0, 1.0);
+        f32 k_mid = limit(mid_drive, 0.0, 1.0);
+        f32 k_comp = limit(body_comp, 0.0, 1.0);
+        // (v60) the gains come linear (their knobs log-mapped, 0 dB in the middle): in dB here,
+        // exactly 0 at a gain of 1
+        f32 k_eql = 8.685889638 * log(limit(eq_low, 0.1778279410, 5.6234132519));
+        f32 k_eqm = 8.685889638 * log(limit(eq_mid, 0.1778279410, 5.6234132519));
+        f32 k_eqh = 8.685889638 * log(limit(eq_high, 0.1778279410, 5.6234132519));
+        i32 k_keytrack = keytrack;
+        if (fx_on == 0)
+        {
+            k_mid = 0.0;
+            k_comp = 0.0;
+            k_eql = 0.0;
+            k_eqm = 0.0;
+            k_eqh = 0.0;
+        }
+        if (k_eql != c_eql)
+        {
+            // low shelf (RBJ), 80 Hz, Q 0.9
+            c_eql = k_eql;
+            f32 A = exp(0.05756462732 * k_eql);
+            f32 w0 = 6.283185307179586 * 80.0 / sr;
+            f32 cs = sin(w0 + 1.5707963267948966);
+            f32 sa = 2.0 * sqrt(A) * (sin(w0) / 1.8);
+            f32 a0 = (A + 1.0) + ((A - 1.0) * cs) + sa;
+            lb0 = (A * ((A + 1.0) - ((A - 1.0) * cs) + sa)) / a0;
+            lb1 = (2.0 * A * ((A - 1.0) - ((A + 1.0) * cs))) / a0;
+            lb2 = (A * ((A + 1.0) - ((A - 1.0) * cs) - sa)) / a0;
+            la1 = (-2.0 * ((A - 1.0) + ((A + 1.0) * cs))) / a0;
+            la2 = ((A + 1.0) + ((A - 1.0) * cs) - sa) / a0;
+        }
+        if (k_eqm != c_eqm)
+        {
+            // peaking bell (RBJ), 400 Hz, Q 0.6 + 0.1 |gain dB|
+            c_eqm = k_eqm;
+            f32 A = exp(0.05756462732 * k_eqm);
+            f32 w0 = 6.283185307179586 * 400.0 / sr;
+            f32 cs = sin(w0 + 1.5707963267948966);
+            f32 al = sin(w0) / (2.0 * (0.6 + (0.1 * fabs(k_eqm))));
+            f32 a0 = 1.0 + (al / A);
+            mb0 = (1.0 + (al * A)) / a0;
+            mb1 = (-2.0 * cs) / a0;
+            mb2 = (1.0 - (al * A)) / a0;
+            ma1 = mb1;
+            ma2 = (1.0 - (al / A)) / a0;
+        }
+        if (k_eqh != c_eqh)
+        {
+            // high shelf (RBJ), 5 kHz, Q 0.9
+            c_eqh = k_eqh;
+            f32 A = exp(0.05756462732 * k_eqh);
+            f32 w0 = 6.283185307179586 * fmin(5000.0, sr * 0.45) / sr;
+            f32 cs = sin(w0 + 1.5707963267948966);
+            f32 sa = 2.0 * sqrt(A) * (sin(w0) / 1.8);
+            f32 a0 = (A + 1.0) - ((A - 1.0) * cs) + sa;
+            hb0 = (A * ((A + 1.0) + ((A - 1.0) * cs) + sa)) / a0;
+            hb1 = (-2.0 * A * ((A - 1.0) + ((A + 1.0) * cs))) / a0;
+            hb2 = (A * ((A + 1.0) + ((A - 1.0) * cs) - sa)) / a0;
+            ha1 = (2.0 * ((A - 1.0) - ((A + 1.0) * cs))) / a0;
+            ha2 = ((A + 1.0) - ((A - 1.0) * cs) - sa) / a0;
+        }
+
+        if (runtime_magic != 7340120)
+        {
+            runtime_magic = 7340120;
+            handled_trigger = pending_trigger;
+            started = false;
+            time_s = 0.0;
+            phase = 0.0;
+            tail = 0.0;
+            last_out = 0.0;
+            ring = false;
+            last_body = 0.0;
+        }
+
+        if (pending_trigger != handled_trigger)
+        {
+            handled_trigger = pending_trigger;
+            if (started)
+                ring_out();
+            started = true;
+            time_s = 0.0;
+            phase = 0.0;
+            key_ratio = 1.0;
+            if (k_keytrack == 1)
+                key_ratio = exp(0.0577622650 * (cast(pending_key, f32) - 60.0));
+            f32 vel = limit(pending_velocity, 0.0, 1.0);
+            velocity_gain = 1.0 - (k_velocity * (1.0 - vel));
+            comp_env = 0.0;
+            // the same noise on every hit
+            noise_state = 22222;
+            white_prev = 0.0;
+            pink_prev = 0.0;
+            p0 = 0.0;
+            p1 = 0.0;
+            p2 = 0.0;
+            p3 = 0.0;
+            p4 = 0.0;
+            p5 = 0.0;
+            p6 = 0.0;
+            brown = 0.0;
+            grey_hi = 0.0;
+            grey_lo = 0.0;
+            q0 = 0.0;
+            q1 = 0.0;
+            q2 = 0.0;
+            q3 = 0.0;
+            q4 = 0.0;
+            q5 = 0.0;
+            hat1 = 0.0;
+            hat2 = 0.0;
+            lp1 = 0.0;
+            lp2 = 0.0;
+            hp_lp = 0.0;
+            c_acc = 0.0;
+            c_prev = 0.0;
+            c_cur = 0.0;
+        }
+
+        // The phase core ends the kick (both curves done) and then scans the curves for
+        // the panel: stop here, the body ringing on to its zero crossing (v40; before, a fading tail).
+        if (started && !k_playing)
+        {
+            started = false;
+            ring_out();
+        }
+
+        f32 body = 0.0;
+        f32 click = 0.0;
+        if (started)
+        {
+            // pitch: share of the curve's span in semitones; the scale gives the top of the
+            // curve (high frequencies) more room, so they edit more finely
+            // the bottom 2 % of the curve is the fundamental exactly (a landing zone: moving the
+            // last points sideways never retunes the body)
+            f32 pv = fmax(0.0, (k_pitch - 0.02) * 1.0204081633);
+            f32 shaped = pv;
+            if (k_curve > 0.0001)
+                shaped = log(1.0 + (k_curve * pv)) * k_norm;
+            // The top of the curve stays at G0 (49 Hz) + amount, whatever the tune: the tune
+            // (and keytrack) moves the bottom, the fundamental, and the curve in between follows.
+            f32 base = k_tune * key_ratio;
+            xover = limit(base * 2.5, 40.0, 1000.0);
+            if (base != c_base)
+            {
+                c_base = base;
+                c_base_st = 17.312340490667 * log(base / 49.0);
+            }
+            f32 span = k_amount - c_base_st;
+            f32 frequency = base * exp(0.0577622650 * span * shaped);
+            frequency = limit(frequency, 1.0, sr * 0.45);
+            // amp: Lin = the curve is the level; dB = the curve is -60 dB .. 0 dB
+            f32 gain = k_amp;
+            if (k_ascale == 1)
+            {
+                gain = exp(6.907755279 * (k_amp - 1.0));
+                if (k_amp < 0.001)
+                    gain = 0.0;
+            }
+            // Phase: an offset that fades in as the pitch lands on the fundamental, (base / f)^2,
+            // so it sets the body's phase and leaves the attack (the sweep) as it is.
+            f32 settle = base / frequency;
+            settle = fmin(1.0, settle * settle);
+            // v39: and only once the click is over (five times its decay), so the body under the
+            // click, and so the click's blend with it, stays as it is
+            f32 gate_span = k_click_len;   // (v70: the click's Length; v39-v69 five times its decay)
+            f32 gate = limit((time_s - k_click_delay) / gate_span, 0.0, 1.0);   // (v61: after the delayed click)
+            gate = gate * gate * (3.0 - (2.0 * gate));
+            f32 offset = (k_phase / 360.0) * settle * gate;
+            body = sin(6.283185307179586 * (phase + offset)) * gain;
+            last_body = body;
+            last_gain = gain;
+            last_freq = frequency;
+            last_offset = offset;
+            phase = phase + (frequency / sr);
+            phase = phase - floor(phase);
+
+            // click: one of the noises, low-passed (Tone) and high-passed (HP), decaying. (v61) It
+            // starts Delay after the hit: nothing of it runs before (the noise, its filters), so it
+            // is the same click whatever the delay, on the body's transient where it is set
+            f32 ct = time_s - k_click_delay;
+            if (ct >= 0.0)
+            {
+            // (v70) the source, played at the pitch curve's rate: a new sample each time c_acc
+            // passes 1 (up to four a sample, +24 semitones), linear between the last two
+            f32 cu = ct / k_click_len;
+            if (cu < 1.0)
+            {
+            f32 cx = cu * 20.0;
+            i32 ci = cast(floor(cx), i32);
+            if (ci > 19)
+                ci = 19;
+            f32 cf = cx - cast(ci, f32);
+            f32 c_env = exp(-5.0 * cu);
+            f32 c_pv = 0.5;
+            if (ctab_ok)
+            {
+                c_env = ctab_a[ci] + ((ctab_a[ci + 1] - ctab_a[ci]) * cf);
+                c_pv = ctab_p[ci] + ((ctab_p[ci + 1] - ctab_p[ci]) * cf);
+            }
+            c_acc = c_acc + exp(2.772588722 * (c_pv - 0.5));
+            if (c_acc >= 1.0)
+            {
+                c_prev = c_cur;
+                c_cur = click_source(k_type, sr);
+                c_acc = c_acc - 1.0;
+            }
+            if (c_acc >= 1.0)
+            {
+                c_prev = c_cur;
+                c_cur = click_source(k_type, sr);
+                c_acc = c_acc - 1.0;
+            }
+            if (c_acc >= 1.0)
+            {
+                c_prev = c_cur;
+                c_cur = click_source(k_type, sr);
+                c_acc = c_acc - 1.0;
+            }
+            if (c_acc >= 1.0)
+            {
+                c_prev = c_cur;
+                c_cur = click_source(k_type, sr);
+                c_acc = c_acc - 1.0;
+            }
+            f32 source = c_prev + ((c_cur - c_prev) * c_acc);
+
+            if (k_click_tone != c_tone)
+            {
+                c_tone = k_click_tone;
+                c_kl = 1.0 - exp(-6.283185307179586 * k_click_tone / sr);
+            }
+            if (k_click_hp != c_hp)
+            {
+                c_hp = k_click_hp;
+                c_kh = 1.0 - exp(-6.283185307179586 * k_click_hp / sr);
+            }
+            lp1 = lp1 + (c_kl * (source - lp1));
+            lp2 = lp2 + (c_kl * (lp1 - lp2));
+            hp_lp = hp_lp + (c_kh * (lp2 - hp_lp));
+            click = (lp2 - hp_lp) * c_env * k_click_level;
+            }
+            }
+            if (time_s < 100.0)
+                time_s = time_s + (1.0 / sr);
+        }
+
+        // the cut kick's last half cycle, to its zero crossing (at its own velocity)
+        f32 ringing = 0.0;
+        if (ring)
+        {
+            f32 rv = sin(6.283185307179586 * (ring_phase + ring_offset)) * ring_gain;
+            if (((rv * ring_prev) <= 0.0) || (ring_time > 0.05))
+            {
+                ring = false;
+            }
+            else
+            {
+                ring_prev = rv;
+                ringing = rv * (ring_vel / fmax(0.001, velocity_gain));
+                ring_phase = ring_phase + (ring_freq / sr);
+                ring_phase = ring_phase - floor(ring_phase);
+                ring_time = ring_time + (1.0 / sr);
+            }
+        }
+
+        // (v51) idle: no kick, no ring-out, the band filters settled: silence, nothing computed
+        f32 output = 0.0;
+        f32 eq_state = fabs(lz1) + fabs(lz2) + fabs(mz1) + fabs(mz2) + fabs(hz1) + fabs(hz2);
+        bool idle = (!started) && (!ring) && ((fabs(lo1) + fabs(lo2) + fabs(mi1) + fabs(mi2) + eq_state) < 0.000000001);
+        if (idle)
+        {
+            lo1 = 0.0;
+            lo2 = 0.0;
+            mi1 = 0.0;
+            mi2 = 0.0;
+            lz1 = 0.0;
+            lz2 = 0.0;
+            mz1 = 0.0;
+            mz2 = 0.0;
+            hz1 = 0.0;
+            hz2 = 0.0;
+        }
+        else
+        {
+            // drive 0 = off (the signal passes untouched), then fades into the saturation
+            f32 dry = body + click + ringing;
+            // the mids saturated, the fundamental and the highs left as they are
+            if (xover != c_xover)
+            {
+                c_xover = xover;
+                c_kx = 1.0 - exp(-6.283185307179586 * xover / sr);
+            }
+            lo1 = lo1 + (c_kx * (dry - lo1));
+            lo2 = lo2 + (c_kx * (lo1 - lo2));
+            f32 rest = dry - lo2;
+            mi1 = mi1 + (c_km * (rest - mi1));
+            mi2 = mi2 + (c_km * (mi1 - mi2));
+            if (k_mid > 0.0001)
+            {
+                f32 gm = 1.0 + (k_mid * 7.0);
+                f32 wm = limit(k_mid * 5.0, 0.0, 1.0);
+                dry = dry + (wm * ((fast_tanh(mi2 * gm) / fast_tanh(gm)) - mi2));
+            }
+            // (v60: the whole kick's drive gone; the chain: the mids' drive, the EQ, the compressor)
+            f32 driven = dry;
+            // (v58) the EQ, each band skipped while flat and settled (exactly the signal)
+            if ((k_eql != 0.0) || ((fabs(lz1) + fabs(lz2)) > 0.0))
+            {
+                f32 y = (lb0 * driven) + lz1;
+                lz1 = (lb1 * driven) - (la1 * y) + lz2;
+                lz2 = (lb2 * driven) - (la2 * y);
+                if ((k_eql == 0.0) && ((fabs(lz1) + fabs(lz2)) < 0.000000001))
+                {
+                    lz1 = 0.0;
+                    lz2 = 0.0;
+                }
+                driven = y;
+            }
+            if ((k_eqm != 0.0) || ((fabs(mz1) + fabs(mz2)) > 0.0))
+            {
+                f32 y = (mb0 * driven) + mz1;
+                mz1 = (mb1 * driven) - (ma1 * y) + mz2;
+                mz2 = (mb2 * driven) - (ma2 * y);
+                if ((k_eqm == 0.0) && ((fabs(mz1) + fabs(mz2)) < 0.000000001))
+                {
+                    mz1 = 0.0;
+                    mz2 = 0.0;
+                }
+                driven = y;
+            }
+            if ((k_eqh != 0.0) || ((fabs(hz1) + fabs(hz2)) > 0.0))
+            {
+                f32 y = (hb0 * driven) + hz1;
+                hz1 = (hb1 * driven) - (ha1 * y) + hz2;
+                hz2 = (hb2 * driven) - (ha2 * y);
+                if ((k_eqh == 0.0) && ((fabs(hz1) + fabs(hz2)) < 0.000000001))
+                {
+                    hz1 = 0.0;
+                    hz2 = 0.0;
+                }
+                driven = y;
+            }
+            // (v60) the compressor, last: a peak follower on the whole kick (instant attack, 60 ms
+            // release, reset on every hit), 3:1 over a threshold of 0 .. -24 dB (the knob), half
+            // the attack's reduction made up (v40-v59: on the body only, before the click)
+            if (k_comp > 0.0001)
+            {
+                comp_env = fmax(fabs(driven), comp_env * c_rel);
+                f32 thr_db = -24.0 * k_comp;
+                f32 env_db = 8.685889638 * log(fmax(comp_env, 0.000001));
+                f32 over_db = fmax(0.0, env_db - thr_db);
+                f32 gain_db = (over_db * -0.6666667) + (8.0 * k_comp);
+                last_comp = exp(gain_db * 0.1151292546);
+                driven = driven * last_comp;
+            }
+            output = driven * velocity_gain * k_level;
+            // (v51) a guard at the output: a NaN or an infinity (never expected) silences the voice
+            // and clears its filters instead of reaching the chain; the level held within +-4 (+12 dBFS)
+            if (!(fabs(output) <= 1000.0))
+            {
+                output = 0.0;
+                lo1 = 0.0;
+                lo2 = 0.0;
+                mi1 = 0.0;
+                mi2 = 0.0;
+                lz1 = 0.0;
+                lz2 = 0.0;
+                mz1 = 0.0;
+                mz2 = 0.0;
+                hz1 = 0.0;
+                hz2 = 0.0;
+                lp1 = 0.0;
+                lp2 = 0.0;
+                hp_lp = 0.0;
+                comp_env = 0.0;
+                started = false;
+                ring = false;
+            }
+            output = limit(output, -4.0, 4.0);
+        }
+        last_out = output;
+        out = <output, output>;
+    }
+}

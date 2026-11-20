@@ -1,0 +1,1556 @@
+{
+ "deco_body_l": [
+  2,
+  0,
+  80,
+  53
+ ],
+ "deco_body_r": [
+  80,
+  0,
+  42,
+  53
+ ],
+ "deco_cheek_l": [
+  0,
+  0,
+  4,
+  53
+ ],
+ "deco_cheek_r": [
+  120,
+  0,
+  4,
+  53
+ ],
+ "pads_view_0": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_1": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_2": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_3": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_4": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_sync_0": [
+  84,
+  3,
+  24,
+  8
+ ],
+ "pads_sync_1": [
+  84,
+  3,
+  24,
+  8
+ ],
+ "pads_scale_0": [
+  97,
+  31,
+  16,
+  8
+ ],
+ "pads_scale_1": [
+  97,
+  31,
+  16,
+  8
+ ],
+ "pads_keytrack_0": [
+  109,
+  3,
+  8,
+  8
+ ],
+ "pads_keytrack_1": [
+  109,
+  3,
+  8,
+  8
+ ],
+ "pads_clickedit_0": [
+  75,
+  3,
+  18,
+  8
+ ],
+ "pads_clickedit_1": [
+  75,
+  3,
+  18,
+  8
+ ],
+ "pads_panel_0": [
+  70,
+  47,
+  16,
+  6
+ ],
+ "pads_panel_1": [
+  70,
+  47,
+  16,
+  6
+ ],
+ "cover_fx_left": [
+  75,
+  4,
+  11,
+  6
+ ],
+ "cover_fx_right": [
+  106,
+  4,
+  11,
+  6
+ ],
+ "cover_key_left": [
+  108,
+  3,
+  1,
+  8
+ ],
+ "cover_key_right": [
+  117,
+  3,
+  2,
+  8
+ ],
+ "frame_eq": [
+  75,
+  29,
+  42,
+  16
+ ],
+ "fader_0": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_1": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_2": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_3": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_4": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_5": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_6": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_7": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_8": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_9": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_10": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_11": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_12": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "lcd_note_0": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_1": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_2": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_3": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_4": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_5": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_6": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_7": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_8": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_9": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_10": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_11": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_12": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_div_pitch_0": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_1": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_2": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_3": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_4": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_5": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_6": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_7": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_8": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_9": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_10": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_11": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_12": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_13": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_14": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_15": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_0": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_1": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_2": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_3": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_4": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_5": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_6": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_7": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_8": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_9": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_10": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_11": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_12": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_13": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_14": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_15": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_0": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_1": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_2": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_3": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_4": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_5": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_6": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_7": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_8": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_9": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_10": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_11": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_12": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_13": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_14": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_15": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_fx_0": [
+  86,
+  3,
+  20,
+  8
+ ],
+ "lcd_fx_1": [
+  86,
+  3,
+  20,
+  8
+ ],
+ "lcd_noise_0": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_1": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_2": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_3": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_4": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_5": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_6": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_7": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_8": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_9": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "cap_length": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_pitch": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_time": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_scale": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_velocity": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_click": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_decay": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_tone": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_low_cut": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_phase": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_drive": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_level": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_tune": [
+  0,
+  0,
+  6,
+  6
+ ],
+ "cap_comp": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_low": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_mid": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_high": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_eq": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_delay": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "deco_body_l_light": [
+  2,
+  0,
+  80,
+  53
+ ],
+ "deco_body_r_light": [
+  80,
+  0,
+  42,
+  53
+ ],
+ "deco_cheek_l_light": [
+  0,
+  0,
+  4,
+  53
+ ],
+ "deco_cheek_r_light": [
+  120,
+  0,
+  4,
+  53
+ ],
+ "pads_view_0_light": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_1_light": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_2_light": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_3_light": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_view_4_light": [
+  6,
+  3,
+  64,
+  8
+ ],
+ "pads_sync_0_light": [
+  84,
+  3,
+  24,
+  8
+ ],
+ "pads_sync_1_light": [
+  84,
+  3,
+  24,
+  8
+ ],
+ "pads_scale_0_light": [
+  97,
+  31,
+  16,
+  8
+ ],
+ "pads_scale_1_light": [
+  97,
+  31,
+  16,
+  8
+ ],
+ "pads_keytrack_0_light": [
+  109,
+  3,
+  8,
+  8
+ ],
+ "pads_keytrack_1_light": [
+  109,
+  3,
+  8,
+  8
+ ],
+ "pads_clickedit_0_light": [
+  75,
+  3,
+  18,
+  8
+ ],
+ "pads_clickedit_1_light": [
+  75,
+  3,
+  18,
+  8
+ ],
+ "pads_panel_0_light": [
+  70,
+  47,
+  16,
+  6
+ ],
+ "pads_panel_1_light": [
+  70,
+  47,
+  16,
+  6
+ ],
+ "cover_fx_left_light": [
+  75,
+  4,
+  11,
+  6
+ ],
+ "cover_fx_right_light": [
+  106,
+  4,
+  11,
+  6
+ ],
+ "cover_key_left_light": [
+  108,
+  3,
+  1,
+  8
+ ],
+ "cover_key_right_light": [
+  117,
+  3,
+  2,
+  8
+ ],
+ "frame_eq_light": [
+  75,
+  29,
+  42,
+  16
+ ],
+ "fader_0_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_1_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_2_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_3_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_4_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_5_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_6_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_7_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_8_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_9_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_10_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_11_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "fader_12_light": [
+  82,
+  3,
+  18,
+  8
+ ],
+ "lcd_note_0_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_1_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_2_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_3_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_4_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_5_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_6_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_7_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_8_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_9_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_10_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_11_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_note_12_light": [
+  100,
+  3,
+  8,
+  8
+ ],
+ "lcd_div_pitch_0_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_1_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_2_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_3_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_4_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_5_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_6_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_7_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_8_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_9_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_10_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_11_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_12_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_13_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_14_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_pitch_15_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_0_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_1_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_2_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_3_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_4_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_5_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_6_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_7_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_8_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_9_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_10_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_11_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_12_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_13_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_14_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_amp_15_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_0_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_1_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_2_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_3_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_4_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_5_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_6_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_7_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_8_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_9_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_10_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_11_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_12_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_13_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_14_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_div_global_15_light": [
+  78,
+  25,
+  18,
+  3
+ ],
+ "lcd_fx_0_light": [
+  86,
+  3,
+  20,
+  8
+ ],
+ "lcd_fx_1_light": [
+  86,
+  3,
+  20,
+  8
+ ],
+ "lcd_noise_0_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_1_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_2_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_3_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_4_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_5_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_6_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_7_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_8_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "lcd_noise_9_light": [
+  94,
+  3,
+  23,
+  8
+ ],
+ "cap_length_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_pitch_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_time_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_scale_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_velocity_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_click_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_decay_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_tone_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_low_cut_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_phase_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_drive_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_level_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_tune_light": [
+  0,
+  0,
+  6,
+  6
+ ],
+ "cap_comp_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "cap_low_light": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_mid_light": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_high_light": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_eq_light": [
+  0,
+  0,
+  14,
+  3
+ ],
+ "cap_delay_light": [
+  0,
+  0,
+  18,
+  3
+ ],
+ "glass_view": [
+  6,
+  15,
+  64,
+  35
+ ]
+}

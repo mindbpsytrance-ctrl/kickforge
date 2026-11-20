@@ -50,9 +50,29 @@ Six kicks by MindB: **Anvil** (the device's default sound), **Molten Core**, **I
 
 In a curve editor, drag a point to move it, double-click to add or delete a point, and drag a segment to bend it. The device's maximize button opens a larger editor.
 
+## Build from source
+
+The device's sources are in [`source/`](source): the panel and graph (`build_kick.py`, `theme.py`), the DSP in Nitro (`kick_voice.nitro`, `kick_phase.nitro`, `kick_display.nitro.in`), the waveform shader (`kick_wave.sksl.in`) and the panel art (`knobs/`). Building them gives the same `KickForge.bwdevice` as the one in `Bitwig-6.1.7`.
+
+1. Set up [polarity/bitwig-devices-blueprint](https://github.com/polarity/bitwig-devices-blueprint) as its [BUILD guide](https://github.com/polarity/bitwig-devices-blueprint/blob/main/docs/BUILD.md) says: its Python environment, the Nitro bridge (it uses the compiler from your own Bitwig installation) and the document codec. KickForge looks for it in `~/Patchbay/bitwig-devices-blueprint`; set `KICKFORGE_BLUEPRINT` if it is somewhere else.
+2. Build:
+
+   ```bash
+   cd source
+   <blueprint>/.venv/bin/python build_kick.py --out build/KickForge.bwdevice
+   ```
+
+The rendered panel art is included (`source/knobs/out`), so Blender is not needed to build. To change the art, see [`source/knobs/README.md`](source/knobs/README.md): it is rendered with Blender, then cut into SVGs with Python 3 (Pillow, NumPy, OpenImageIO). The legends use the [Inter](https://rsms.me/inter/) font (SIL Open Font License, not included); set `KICKFORGE_FONTS` to its folder.
+
+Contributions are welcome: open an issue or a pull request.
+
 ## License
 
-[Creative Commons Attribution-NonCommercial 4.0 International](LICENSE) (CC BY-NC 4.0). You may share and adapt KickForge and its presets with credit to MindB, but not for commercial purposes.
+Copyright (C) 2026 MindB.
+
+KickForge (the device, its sources, the presets and the demo) is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License version 3](LICENSE) (GPL-3.0) as published by the Free Software Foundation. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the license for details.
+
+Release 1.0.0 was published under CC BY-NC 4.0; later releases are under GPL-3.0.
 
 ---
 
@@ -69,4 +89,6 @@ KickForge est un synthé de kick pour Bitwig Studio, pensé pour les kicks psytr
 2. Dans **Tools → Device Folders**, sélectionne le dossier `Bitwig-6.1.7`, puis lance Bitwig avec **Load**.
 3. Copie les presets dans `Bitwig Studio/Library/Presets/KickForge`.
 
-**Licence :** CC BY-NC 4.0. Le partage et la modification sont autorisés en citant MindB, sans usage commercial.
+**Sources :** dans le dossier `source/`. Pour compiler le device, voir « Build from source » plus haut. Les contributions sont les bienvenues (issues et pull requests).
+
+**Licence :** GNU GPL version 3 (GPL-3.0). Tu peux utiliser, partager, modifier et même vendre KickForge, à condition de garder la même licence, de fournir les sources et de citer MindB. La version 1.0.0 était sous CC BY-NC 4.0.
