@@ -2,6 +2,12 @@
 
 A kick drum synth for Bitwig Studio, made especially for psytrance kicks and built as a native Nitro device. You draw the kick's pitch and amp envelopes as curves, layer a click on top, and finish it with drive, EQ and a compressor.
 
+## Demo
+
+[![KickForge demo: click to watch the video](media/kickforge-demo.jpg)](media/kickforge-demo.mp4)
+
+*Click the picture to watch the demo (2 min 38, with sound).*
+
 *Français plus bas.*
 
 ## Features
@@ -53,6 +59,8 @@ In a curve editor, drag a point to move it, double-click to add or delete a poin
 ## Français
 
 KickForge est un synthé de kick pour Bitwig Studio, pensé pour les kicks psytrance, sous forme de device Nitro natif. On dessine en courbes le pitch et l'amplitude du kick, on ajoute un clic par-dessus (bruits, hi-hats 909/808/606 simulés, avec ses propres courbes PITCH et AMP), puis on finit avec le drive, l'EQ trois bandes et le compresseur.
+
+**Démo :** la [vidéo](media/kickforge-demo.mp4) en haut de la page.
 
 **Prérequis :** Bitwig Studio 6.1.7 ou plus récent. Il faut aussi Patchbay Mod Loader avec **Framework: Nitro Devices** (anciennement Custom Nitro Registration). Testé seulement sous Linux avec Bitwig 6.1.7.
 
