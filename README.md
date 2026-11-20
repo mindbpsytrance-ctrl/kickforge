@@ -6,7 +6,7 @@ A kick drum synth for Bitwig Studio, made especially for psytrance kicks and bui
 
 [![KickForge demo: click to watch the video](media/kickforge-demo.jpg)](media/kickforge-demo.mp4)
 
-*Click the picture to watch the demo (2 min 38, with sound).*
+*Click the picture to watch the demo (1 min 34, with sound).*
 
 *Français plus bas.*
 
