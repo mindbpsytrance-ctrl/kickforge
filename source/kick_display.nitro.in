@@ -1,7 +1,7 @@
 component kickforge_display_@NAME@
 {
     // Keeps 11 points of the kick's curves for the @NAME@ waveform drawing, from the phase
-    // core's idle scan (v39: at (k/10)^2 across the curves, the same for every tab), and packs
+    // core's idle scan (v39: at (k/10)^2 across the curves, the same for every tab; v77: scan_x), and packs
     // them with the settings for the SkSL panel. A float carries 24 bits exactly (n / 2^24):
     //   lane0, lane1: f0..f10, a0..a10 (a byte each), then a byte "head" and a byte "x"
     //     f = the pitch curve's shaped value (0..1 of root .. top, after the pitch scale; the
@@ -16,6 +16,10 @@ component kickforge_display_@NAME@
     //   lane2.w: ms per beat (11 bits) | click level (5) | click low cut (4, log) | root - C0 (4)
     // (v39: the lengths and time scales go to the shader, which puts the points in time with
     // them: turning those no longer redraws the waveform point by point over a sweep)
+    // (v76) the oscilloscope's display (@SCOPE@ = 1, the master tab's) draws the kick after the FX:
+    // its amp points go on 6 bits, a * 4, and the two bits left in each of the 11 carry the FX
+    // settings, 22 bits (bits 2k, 2k+1 in a[k]): Drive (5 bits, 0..31) | Comp (5) | EQ Low (4,
+    // 0..14 of -15 .. +15 dB, 7 = 0 dB) | EQ Mid (4) | EQ High (4); all flat with the FX off
     audio_inport f32 pitch_curve = 0.0;
     audio_inport f32 amp_curve = 0.0;
     audio_inport f32<4> ctl;
@@ -32,13 +36,19 @@ component kickforge_display_@NAME@
     audio_inport f32 click_hp = 300.0;
     audio_inport f32 pitch_time_scale = 0.668;
     audio_inport f32 amp_time_scale = 0.347;
-    audio_inport f32 click_delay = 0.0;     // (v61) seconds, 0..0.015: the master display sends it as its head
+    audio_inport f32 click_delay = 0.0;     // (v61) seconds, 0..0.005 (v79; v62-v78 0..0.015): the master display sends it as its head
     value_inport i32 fx_on = 1;             // (v49) 0: the FX bypassed, the scope drawn undriven
     // (v70) the click's curves, as the phase core sweeps them (21 points, x = k / 20): the click
     // display (@CLICK@ = 1) keeps the even ones, x = 0, 0.1 .. 1, in place of the body's
     audio_inport f32 click_pitch_curve = 0.5;
     audio_inport f32 click_amp_curve = 1.0;
     audio_inport f32<2> click_ctl;
+    audio_inport f32 mid_drive = 0.0;       // (v76) the FX (v78: after the click's inputs, in the
+                                            // order build_kick.py numbers them; v76-v77 before them), as the voice's (the scope's display only)
+    audio_inport f32 body_comp = 0.0;
+    audio_inport f32 eq_low = 1.0;
+    audio_inport f32 eq_mid = 1.0;
+    audio_inport f32 eq_high = 1.0;
 
     audio_outport f32<4> lane0;
     audio_outport f32<4> lane1;
@@ -77,6 +87,15 @@ component kickforge_display_@NAME@
     f32 qn(f32 x, f32 levels)
     {
         return floor((limit(x, 0.0, 1.0) * levels) + 0.5);
+    }
+
+    // (v76) an amp point on 6 bits (a byte, 0..255, made 0..63), times 4, plus the two bits of
+    // word at weight (4^k)
+    f32 with_pair(f32 a, f32 word, f32 weight)
+    {
+        f32 above = floor(word / weight);
+        f32 pair = above - (floor(above * 0.25) * 4.0);
+        return (floor((a * 0.2470588235) + 0.5) * 4.0) + pair;
     }
 
     process
@@ -137,7 +156,7 @@ component kickforge_display_@NAME@
                 head = floor((limit(c[1] / span, 0.0, 1.0) * 250.0) + 0.5);
             if (@MASTER@ == 1)
             {
-                head = q8(limit(click_delay, 0.0, 0.015) * 66.66666667);   // (v61: the click's delay, v62 to 15 ms; v39-v59 the drive)
+                head = q8(limit(click_delay, 0.0, 0.005) * 200.0);   // (v61: the click's delay, v62 to 15 ms, v79 to 5 ms; v39-v59 the drive)
             }
 
             f32 midi = 69.0 + (17.312340490667 * log(k_tune / 440.0));
@@ -155,10 +174,51 @@ component kickforge_display_@NAME@
             f32 lw = ((mpb * 8192.0) + (qn(k_level, 31.0) * 256.0) + (qn(log(k_hp / 20.0) / 5.991464547, 15.0) * 16.0)
                       + root4) * 0.000000059604644775390625;
 
+            // as: the amp points as sent (the scope's: on 6 bits, the FX in the low two)
+            f32 as0 = ab[0];
+            f32 as1 = ab[1];
+            f32 as2 = ab[2];
+            f32 as3 = ab[3];
+            f32 as4 = ab[4];
+            f32 as5 = ab[5];
+            f32 as6 = ab[6];
+            f32 as7 = ab[7];
+            f32 as8 = ab[8];
+            f32 as9 = ab[9];
+            f32 as10 = ab[10];
+            if (@SCOPE@ == 1)
+            {
+                // (v76) the FX settings in the amp points' two low bits
+                f32 q_drive = qn(mid_drive, 31.0);
+                f32 q_comp = qn(body_comp, 31.0);
+                f32 q_low = qn((8.685889638 * log(limit(eq_low, 0.1778279410, 5.6234132519)) + 15.0) / 30.0, 14.0);
+                f32 q_mid = qn((8.685889638 * log(limit(eq_mid, 0.1778279410, 5.6234132519)) + 15.0) / 30.0, 14.0);
+                f32 q_high = qn((8.685889638 * log(limit(eq_high, 0.1778279410, 5.6234132519)) + 15.0) / 30.0, 14.0);
+                if (fx_on == 0)
+                {
+                    q_drive = 0.0;
+                    q_comp = 0.0;
+                    q_low = 7.0;
+                    q_mid = 7.0;
+                    q_high = 7.0;
+                }
+                f32 word = q_drive + (q_comp * 32.0) + (q_low * 1024.0) + (q_mid * 16384.0) + (q_high * 262144.0);
+                as0 = with_pair(ab[0], word, 1.0);
+                as1 = with_pair(ab[1], word, 4.0);
+                as2 = with_pair(ab[2], word, 16.0);
+                as3 = with_pair(ab[3], word, 64.0);
+                as4 = with_pair(ab[4], word, 256.0);
+                as5 = with_pair(ab[5], word, 1024.0);
+                as6 = with_pair(ab[6], word, 4096.0);
+                as7 = with_pair(ab[7], word, 16384.0);
+                as8 = with_pair(ab[8], word, 65536.0);
+                as9 = with_pair(ab[9], word, 262144.0);
+                as10 = with_pair(ab[10], word, 1048576.0);
+            }
             held0 = <pack3(fb[0], fb[1], fb[2]), pack3(fb[3], fb[4], fb[5]),
-                     pack3(fb[6], fb[7], fb[8]), pack3(fb[9], fb[10], ab[0])>;
-            held1 = <pack3(ab[1], ab[2], ab[3]), pack3(ab[4], ab[5], ab[6]),
-                     pack3(ab[7], ab[8], ab[9]), pack3(ab[10], head, x_byte)>;
+                     pack3(fb[6], fb[7], fb[8]), pack3(fb[9], fb[10], as0)>;
+            held1 = <pack3(as1, as2, as3), pack3(as4, as5, as6),
+                     pack3(as7, as8, as9), pack3(as10, head, x_byte)>;
             held2 = <lx, pack3(q8(k_phase / 360.0), amount2, q8(k_scale)),
                      pack3(q8(limit(pitch_time_scale, 0.0, 1.0)), q8(limit(amp_time_scale, 0.0, 1.0)),
                            q8(log(k_decay / 0.0002) / 6.907755279)),

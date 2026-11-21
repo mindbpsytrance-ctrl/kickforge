@@ -126,13 +126,26 @@ def main():
     canvas = Image.new("RGBA", (W * PX, H * PX), (40, 40, 48, 255))
     draw = ImageDraw.Draw(canvas)
     mismatches, controls = [], []
-    for item in owned(pf["root_item#6212"]["value"]):
-        rect = grid_rect(item)
-        if rect is None or item.get("class_name") == "grid_panel_item":
-            continue
-        expr = shows.get(ids[id(item)])
-        if expr and not holds(expr, values):
-            continue
+    # (v74) nested grids (the tabs' layers): their items placed from the grid's corner, shown only
+    # while the grid is
+    placed = []
+
+    def visit(grid, ox, oy):
+        for entry in grid["fields"].get("items#6221", {}).get("value", []):
+            item = entry.get("Object")
+            if not isinstance(item, dict):
+                continue
+            rect = grid_rect(item)
+            expr = shows.get(ids[id(item)])
+            if expr and not holds(expr, values):
+                continue
+            if item.get("class_name") == "grid_panel_item":
+                visit(item, ox + (rect[0] if rect else 0), oy + (rect[1] if rect else 0))
+            elif rect is not None:
+                placed.append((item, (rect[0] + ox, rect[1] + oy, rect[2], rect[3])))
+
+    visit(pf["root_item#6212"]["value"], 0, 0)
+    for item, rect in placed:
         x, y, w, h = rect
         cls = item.get("class_name")
         if cls == "image_panel_item":

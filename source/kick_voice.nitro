@@ -40,7 +40,7 @@ component kickforge_voice
     audio_inport f32 eq_low = 1.0;          // linear gain, 0.178..5.62 (-15..15 dB): low shelf, 80 Hz (v58; v60: held linear)
     audio_inport f32 eq_mid = 1.0;          // linear gain: mid bell, 400 Hz, its Q narrowing with the gain (v58)
     audio_inport f32 eq_high = 1.0;         // linear gain: high shelf, 5 kHz (v58)
-    audio_inport f32 click_delay = 0.0;     // seconds, 0..0.015: the click starts this late (v61; v62: 5 -> 15 ms)
+    audio_inport f32 click_delay = 0.0;     // seconds, 0..0.005: the click starts this late (v61; v62: 5 -> 15 ms; v79: 5 ms)
     value_inport i32 fx_on = 1;             // 0 = the FX tab's Drive, EQ and Comp bypassed (v49, v58, v60)
 
     audio_outport f32<2> out;
@@ -384,7 +384,7 @@ component kickforge_voice
         }
         f32 k_click_tone = limit(click_tone, 50.0, sr * 0.45);
         f32 k_click_hp = limit(click_hp, 10.0, sr * 0.45);
-        f32 k_click_delay = limit(click_delay, 0.0, 0.015);
+        f32 k_click_delay = limit(click_delay, 0.0, 0.005);
         f32 k_velocity = limit(velocity, 0.0, 1.0);
         f32 k_level = limit(level, 0.0, 1.0);
         f32 k_mid = limit(mid_drive, 0.0, 1.0);

@@ -23,9 +23,11 @@ component kickforge_phase
     audio_inport f32 pitch_length = 0.3;     // seconds (Time mode)
     audio_inport f32 amp_length = 0.6;       // seconds (Time mode)
     value_inport i32 pitch_sync = 0;         // 0 = Time, 1 = Sync
-    value_inport i32 pitch_div = 4;          // division index (see div_beats)
+    // (v75) the note values come as numbers 0 .. 15 (decimal parameters, so modulators reach them;
+    // v37-v74 lists, which Bitwig does not modulate), rounded to the nearest index here
+    audio_inport f32 pitch_div = 7.0;        // division index (see div_beats)
     value_inport i32 amp_sync = 0;
-    value_inport i32 amp_div = 7;
+    audio_inport f32 amp_div = 7.0;
     audio_inport f32 beats_per_frame = 0.0;  // from the transport
     value_inport i32 tune_note = 31;         // MIDI note, 24 .. 36 = C0 .. C1 in Bitwig's names
     audio_inport f32 pitch_time_scale = 0.668;  // 0..1: 0 = time even across the curve, up = more room for the start
@@ -96,6 +98,24 @@ component kickforge_phase
     // Time (0..1 of the length) -> position on the curve: log(1 + k t) / log(1 + k),
     // k = 1001^scale - 1, so the start of the kick takes more of the curve's width.
     // (v51: k and 1 / log(1 + k) come in, cached per scale)
+    // (v77) the scan's positions across the curves: (k / 10)^2 up to k = 5 (0 .. 0.25, the attack),
+    // then 0.38, 0.55, 0.75, 0.95, 1 (v39-v76: (k / 10)^2 throughout, 0.81 then 1: a curve held to
+    // its end and cut there was drawn fading over the last 40 % of the kick)
+    f32 scan_x(f32 k)
+    {
+        if (k < 5.5)
+            return k * k * 0.01;
+        if (k < 6.5)
+            return 0.38;
+        if (k < 7.5)
+            return 0.55;
+        if (k < 8.5)
+            return 0.75;
+        if (k < 9.5)
+            return 0.95;
+        return 1.0;
+    }
+
     f32 warp(f32 t, f32 k, f32 inv_norm)
     {
         f32 x = fmax(0.0, fmin(1.0, t));
@@ -115,9 +135,9 @@ component kickforge_phase
         f32 k_p_s = pitch_length;
         f32 k_a_s = amp_length;
         i32 k_p_sync = pitch_sync;
-        i32 k_p_div = pitch_div;
+        i32 k_p_div = cast(floor(fmax(0.0, fmin(15.0, pitch_div)) + 0.5), i32);
         i32 k_a_sync = amp_sync;
-        i32 k_a_div = amp_div;
+        i32 k_a_div = cast(floor(fmax(0.0, fmin(15.0, amp_div)) + 0.5), i32);
         f32 k_bpf = beats_per_frame;
         i32 k_note = tune_note;
         f32 k_pw = pitch_time_scale;
@@ -183,14 +203,13 @@ component kickforge_phase
         f32 a_x = warp(t / a_len, c_ak, c_an);
         if (!playing)
         {
-            // scan point k: position (k / 10)^2 across both curves (v39: on the curves, the same for
+            // scan point k: position scan_x(k) across both curves (v39: on the curves, the same for
             // every tab; before, at (k / 10)^2 of the shown tab's length in time, so the points
             // moved with the lengths and time scales: turning those redrew the waveform point by
             // point, in jolts. The shader now puts the points in time with the live values.)
             i32 k = scan;
-            f32 u = cast(k, f32) * 0.1;
-            p_x = u * u;
-            a_x = u * u;
+            p_x = scan_x(cast(k, f32));
+            a_x = p_x;
             state = -1.0 - cast(k, f32);
             i32 hold_len = 768;
             i32 read_from = 640;

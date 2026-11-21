@@ -14,6 +14,9 @@ def qn(x, n): return math.floor(lim(x) * n + 0.5)
 def pack3(a, b, c): return f32((a * 65536.0 + b * 256.0 + c) / 16777216.0)
 def packn(n): return f32(n / 16777216.0)
 
+# (v77) the scan's points across the curves (kick_phase.nitro scan_x)
+SCAN_X = [0.0, 0.01, 0.04, 0.09, 0.16, 0.25, 0.38, 0.55, 0.75, 0.95, 1.0]
+
 def curve(points, x):  # linear segments (curvature 0)
     for (p0, v0, _), (p1, v1, _) in zip(points, points[1:]):
         if p0 <= x <= p1:
@@ -22,17 +25,23 @@ def curve(points, x):  # linear segments (curvature 0)
 
 def lanes(tab, pitch_pts, amp_pts, p_len, a_len, midi=31, amount=60.0, head=None, phase=0.0, mpb=500.0,
           pts=0.668, ats=0.347, pscale=0.0, ascale=0, ctype=0, level=0.3, decay=0.006, tone=6000.0, hp=300.0,
-          drive=None):
+          drive=None, fx=None, delay=0.0):
     fb, ab = [], []
     k_curve = math.exp(6.908754779 * pscale) - 1.0
     for k in range(11):
-        x = min(0.999, (k * 0.1) ** 2)
+        x = min(0.999, SCAN_X[k])
         pv = max(0.0, (curve(pitch_pts, x) - 0.02) / 0.98)
         shaped = math.log(1 + k_curve * pv) / math.log(1 + k_curve) if k_curve > 1e-4 else pv
         fb.append(q8(shaped)); ab.append(q8(curve(amp_pts, x)))
     span = p_len if tab == 0 else a_len
     hd = 255 if head is None else math.floor(lim(head / span) * 250 + 0.5)
     if drive is not None: hd = q8(drive)
+    if fx is not None:   # (v76) the scope's display: the click's delay as its head, the FX in the amp points
+        hd = q8(lim(delay, 0, 0.005) / 0.005)   # (v79: 5 ms; v62-v78 15 ms)
+        def eq(g): return qn((20 * math.log10(min(5.6234132519, max(0.1778279410, g))) + 15) / 30, 14)
+        word = (qn(fx.get("drive", 0.0), 31) + qn(fx.get("comp", 0.0), 31) * 32 + eq(fx.get("low", 1.0)) * 1024
+                + eq(fx.get("mid", 1.0)) * 16384 + eq(fx.get("high", 1.0)) * 262144)
+        ab = [math.floor(a * 63 / 255 + 0.5) * 4 + (word >> (2 * k)) % 4 for k, a in enumerate(ab)]
     xb = qn(math.log(tone / 200) / 4.605170186, 31) * 8 + ctype
     l0 = [pack3(fb[0], fb[1], fb[2]), pack3(fb[3], fb[4], fb[5]), pack3(fb[6], fb[7], fb[8]), pack3(fb[9], fb[10], ab[0])]
     l1 = [pack3(ab[1], ab[2], ab[3]), pack3(ab[4], ab[5], ab[6]), pack3(ab[7], ab[8], ab[9]), pack3(ab[10], hd, xb)]
@@ -66,7 +75,13 @@ if __name__ == "__main__":
     render(out / "amp-short.png", "amp", 336, 52, **dict(common, a_len=120.0))
     render(out / "amp-time0.png", "amp", 760, 136, **dict(common, ats=0.0))
     render(out / "click.png", "click", 760, 136, **common)
-    render(out / "master.png", "master", 760, 300, drive=0.0, **common)
-    render(out / "master-drive.png", "master", 760, 300, drive=0.6, **common)
-    render(out / "master-phase90.png", "master", 760, 300, drive=0.0, **dict(common, phase=90.0))
+    db = lambda d: 10 ** (d / 20)
+    render(out / "master.png", "master", 760, 300, fx={}, **common)
+    render(out / "master-drive.png", "master", 760, 300, fx={"drive": 0.6}, **common)
+    render(out / "master-comp.png", "master", 760, 300, fx={"comp": 1.0}, **common)
+    render(out / "master-eq-low-up.png", "master", 760, 300, fx={"low": db(12)}, **common)
+    render(out / "master-eq-low-down.png", "master", 760, 300, fx={"low": db(-15)}, **common)
+    render(out / "master-eq-high-up.png", "master", 760, 300, fx={"high": db(15)}, **dict(common, level=0.6))
+    render(out / "master-click.png", "master", 760, 300, fx={}, **dict(common, level=0.6))
+    render(out / "master-phase90.png", "master", 760, 300, fx={}, **dict(common, phase=90.0))
     print("ok", out)

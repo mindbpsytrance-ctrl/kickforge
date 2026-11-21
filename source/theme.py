@@ -280,6 +280,11 @@ assert EQ_RECT[0] >= GROUP_RECTS["tab"][0] + FRAME and EQ_RECT[0] + EQ_RECT[2] <
 assert EQ_RECT[1] + EQ_RECT[3] <= GROUP_RECTS["tab"][1] + GROUP_RECTS["tab"][3] - FRAME + 0.2
 assert EQ_CAPTIONS[0][1] + 3 <= EQ_RECT[1] + EQ_RECT[3] - 1
 # (a caption's cell when not the knobs' CELL x 3)
+# (v74) a tab's layer (build_kick PanelBuilder.tab_layer): the tray, on whole units
+TAB_LAYER = (72, 1, 48, 46)
+assert TAB_LAYER[0] <= GROUP_RECTS["tab"][0] and TAB_LAYER[1] <= GROUP_RECTS["tab"][1]
+assert TAB_LAYER[0] + TAB_LAYER[2] >= GROUP_RECTS["tab"][0] + GROUP_RECTS["tab"][2] and TAB_LAYER[1] + TAB_LAYER[3] <= PANEL_H
+
 # (v73) the click tab's five knobs, EQ-sized (the EQ's art, knobs/out/eq): Level | Delay | Length
 # across the tray as the EQ's three, Tone | Low Cut centred under them; captions CELL wide
 # (the other knobs' caption images), centred under each box

@@ -3,7 +3,8 @@
 Bitwig saves each drawing's shader in a preset (class 5516: identifier, shader text) and, on
 loading the preset, takes it from there: an old shader comes back, an empty one draws nothing, and a
 drawing the preset has no entry for is left empty too. The device's own shader is only used on a
-fresh insert. So after a shader change (or the v24-v26 id changes), the presets need these
+fresh insert. (Seen 2026-11-21: loading a preset onto a KickForge already in a project does not
+replace its drawings either; only a fresh device takes them, from the preset or the device.) So after a shader change (or the v24-v26 id changes), the presets need these
 entries rewritten: one per drawing, under the device's id (WAVE_PITCH, ...), with its shader.
 
 Entries are matched to the device's drawings by id (WAVE_<TAB>, also WAVE_<TAB>_<hash> from v24);

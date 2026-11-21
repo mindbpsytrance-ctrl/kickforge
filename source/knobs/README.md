@@ -495,3 +495,62 @@ back to 61 high, 124 wide (the screen 64 wide), with the parts in step:
 - `PanelBuilder.eq_encoder(..., bipolar=False)` : le même petit rotatif, mais ses LED s'allument depuis la gauche (`led_thresholds`) et son pointeur suit `pointer_ranges`, comme les gros rotatifs.
 - Les légendes (CELL x 3) sont centrées sous chaque boîte de 14 de large ; aucun rendu Blender n'est à refaire.
 - Les presets ne changent pas : le paramètre garde son identifiant.
+
+## v74 : un calque par onglet (lag au changement d'onglet)
+
+- Retour de testeurs : ça lague quand on passe de PITCH à AMP. Chaque onglet montrait ou cachait ses images une par une : environ 2 100 images avaient chacune leur condition « VIEW == n », et un changement d'onglet en faisait basculer environ 800.
+- Désormais, les réglages de chaque onglet sont dans un calque à eux : une grille imbriquée sur le bac des réglages (`theme.TAB_LAYER`, 72, 1, 48 x 46). C'est le calque qu'on montre ou qu'on cache, avec `SHOW[tab]` (`PanelBuilder.tab_layer`). Les conditions des images perdent la partie onglet (`layer_expression`, `LAYER_SHOW` ; par exemple « VIEW + 5 * P_SYNC == 6 » devient « P_SYNC == 1 »). Il ne reste plus que 25 conditions qui dépendent de VIEW, contre 2 140.
+- `tools/mock_panel.py` comprend les grilles imbriquées : les items sont placés depuis le coin du calque et ne s'affichent que si le calque est visible. Les maquettes de la v74 sont identiques au pixel près à celles de la v73 (5 onglets, 2 thèmes, modes SYNC, CLICK_EDIT, FX OFF, KEY).
+- À vérifier dans Bitwig : le changement d'onglet, et le fait que les réglages répondent toujours aux clics à travers le calque.
+
+## v75 : les rotatifs de note (1/8, 1/16…) deviennent modulables
+
+- Retour de testeurs : les sélecteurs de note (mode SYNC) ne se modulaient pas, contrairement aux autres rotatifs. C'étaient des listes (indexed atoms `P_DIV` / `A_DIV`), et Bitwig ne laisse pas un modulateur agir sur une liste.
+- Ils deviennent des réglages décimaux de 0 à 15 (`P_NOTE` / `A_NOTE`, la même position dans `DIVISIONS`). Le cœur de phase les reçoit sur un port audio et arrondit à la note la plus proche (`kick_phase.nitro`). Le sélecteur (LED, aiguille, petit écran) affiche la note la plus proche (`> i - 0.5 && < i + 0.5`), et la bulle de valeur est masquée, car elle montrerait l'indice.
+- Les nouveaux identifiants sont volontaires : donner une valeur de preset « liste » à un réglage décimal a déjà posé problème (Tune, v17).
+- Presets convertis une fois (2026-11-20) avec `tools/convert_div_presets.py` : `P_DIV` / `A_DIV` n → `P_NOTE` / `A_NOTE` n.0. Les 37 presets sont convertis ; les originaux sont dans `preset-backups/2026-11-20_201859_note-decimal`. Le script ne touche pas à un preset déjà converti.
+- Un projet Bitwig enregistré avant la v75 perd sa note de durée : elle revient au défaut, 1/8.
+- Maquettes de la v75 identiques à celles de la v74 pour les 16 notes, y compris entre deux notes (138 cas).
+
+## v76 : l'oscilloscope du MASTER montre le kick après les FX
+
+- Retour : l'oscilloscope (onglets MASTER et FX) ne tenait pas compte du Drive, de l'EQ ni du Comp. Depuis la v60, il n'était qu'un modèle du kick avant la chaîne FX.
+- L'affichage du scope (`@SCOPE@ = 1`, l'affichage master seulement, pas celui du clic) reçoit Drive, Comp et les trois gains d'EQ. Ses 11 points d'amplitude passent sur 6 bits (a × 4, invisible à cette taille). Les 2 bits restants de chacun portent les FX, soit 22 bits : Drive 5 | Comp 5 | Low 4 | Mid 4 | High 4. L'EQ va de 0 à 14 sur −15..+15 dB, et 7 vaut 0 dB. Tout est neutre quand FX est sur OFF.
+- Le shader (`MODE > 3.5`) reprend les formules de `kick_voice.nitro` :
+  - le corps passe par le gain des trois biquads RBJ à sa fréquence (`eqGain`) ;
+  - le Drive sature les mids, en gain et en phase (`midsOf` : le reste au-dessus de deux pôles au crossover, puis deux pôles à 5 kHz) ;
+  - le compresseur part d'un suiveur de crête (60 ms) estimé aux points de la courbe d'amp ;
+  - le clic passe par l'EQ à environ 0,35 × son Tone.
+- Si le kick dépasse l'écran (boost d'EQ, Drive), la trace est réduite pour tenir. Deux lignes discrètes montrent alors le niveau 100 %.
+- Ça reste un modèle et non une capture de la sortie réelle : un dessin ne reçoit que 12 floats par image.
+- Pitch, Amp, Clic et panneau : rendus identiques au pixel près à la v75. 38 presets synchronisés (shaders), originaux dans `preset-backups/2026-11-20_203439`.
+
+## v77 : le scope suit le kick jusqu'à sa fin
+
+- Retour : comparé à un oscilloscope placé en sortie, le scope du MASTER ne collait pas. Hors de Bitwig, sur le preset Nickel, le vrai signal a été recalculé depuis ses courbes et comparé au modèle. Le nombre de cycles était bon. Deux vraies erreurs sont apparues, au-delà des simples différences d'échelle.
+  1. **La fin s'éteignait trop tôt.** Les 11 points de balayage, à (k/10)², passaient de 0,81 à 1. Une courbe tenue jusqu'à sa fin puis coupée était dessinée en fondu sur les 40 derniers % du kick. Les points sont désormais 0, 0,01, 0,04, 0,09, 0,16, 0,25 (inchangés), puis 0,38, 0,55, 0,75, 0,95 et 1 (`scan_x` dans `kick_phase.nitro`, `scanX` dans le shader, `SCAN_X` dans `tools/render_wave.py`).
+  2. **Le pitch de la queue était trop haut, jusqu'à 20 %.** Les 2 % du bas de la courbe de pitch donnent exactement la fondamentale (zone d'atterrissage), et la courbe y entre entre deux points. Le shader prolonge maintenant la pente du point d'avant (en valeur de courbe, avant mise en forme) jusqu'à l'atterrissage (`xe`), puis tient la fondamentale.
+- L'amplitude entre les points utilise les tangentes PCHIP (moyenne harmonique pondérée) au lieu de la moyenne des pentes : la chute raide de fin ne fait plus gonfler le segment d'avant.
+- Les vues PITCH, AMP et MASTER changent (fin de kick tenue). Le panneau est identique au pixel près. Presets synchronisés.
+- Abandonné : une version sonde qui branchait les entrées 3 à 8 d'un dessin, pour lire les uniforms `ctl` et `cvGate0` que Bitwig déclare dans son en-tête de shader (`height`, `width`, `beatTime`, `ctl`, `cvGate0`, `iTime`, `iResolution`). Elle faisait planter le moteur audio. Le flag `--probe-ctl` reste dans `build_kick.py`, mais ne doit pas être installé tel quel.
+
+## v78 : les entrées de l'affichage remises dans l'ordre
+
+- Bug de la v76 et de la v77. Dans `kick_display.nitro.in`, les entrées FX (`mid_drive`, `body_comp`, `eq_*`) étaient déclarées avant les entrées du clic (`click_pitch_curve`, `click_amp_curve`, `click_ctl`), alors que `build_kick.py` les numérote 21 à 25, après celles du clic. Bitwig branche les ports par position.
+  - Dans l'affichage du scope, les FX recevaient les courbes du clic pendant leur balayage. Le scope appliquait donc des FX qui changeaient sans arrêt et « s'agitait ».
+  - Dans l'affichage du clic, les entrées du clic recevaient les FX. Aucun point du clic n'était capturé et la waveform du clic avait disparu.
+- Les entrées FX sont maintenant déclarées en dernier. `check_port_order` (dans `build_kick.py`) vérifie à chaque build que les ports de chaque cœur Nitro suivent l'ordre de sa source. Il signale bien le bug de la v77.
+- Shaders identiques à la v77.
+
+## v79 : Delay du clic sur 5 ms, corps du kick de retour dans la vue CLICK
+
+- **Delay du clic : 0 à 5 ms** (0 à 15 ms de la v62 à la v78) pour un réglage plus fin. C'est le même paramètre (`CLICK_DELAY`), seule sa plage change. Tous les presets sont sous 0,5 ms, aucun n'est coupé. La voix, l'affichage (tête × 200) et le shader suivent.
+  - Les seuils des LED du rotatif sont devenus si petits que `%.9g` les écrivait en exposant (`6.25e-05`), et le build refuse le signe moins dans une expression de panneau. `num()` écrit ces nombres en décimales ; les autres gardent leur format.
+- **Le corps en gris dans la vue CLICK.** Depuis la v70, l'affichage du clic envoie les courbes du clic à la place de celles du corps : le corps n'était plus dessiné. Il n'y a plus de place dans les 12 floats d'un dessin.
+  - Nouveau dessin `WAVE_CLICK_BODY` : le même shader avec `OVERLAY = 1` (et `MODE` 2, la durée du clic). Il lit l'affichage du scope (corps, longueurs, durée et Delay du clic), dessine le corps seul sur fond noir et le rend en lumière prémultipliée (alpha = luminosité).
+  - Dans chaque éditeur de courbe du clic (device et vue agrandie), il est posé au-dessus du dessin du clic et sous la courbe. `curve_display` accepte une liste de couches.
+  - Rendu Skia vérifié (le corps gris transparent sur le bruit). Reste à vérifier que Bitwig compose bien la transparence d'un dessin SkSL.
+  - Un projet enregistré avant n'a rien sous ce nouvel id : la couche reste vide jusqu'à ce que le preset soit rechargé ou le device réinséré. 42 presets synchronisés (couche ajoutée), originaux dans `preset-backups/2026-11-21_023830`.
+- **Vérifié dans Bitwig** : le corps gris s'affiche, Bitwig compose bien la transparence d'un dessin SkSL posé sur un autre.
+- **À savoir (constaté le 2026-11-21) :** charger un preset sur un KickForge déjà présent **ne remplace pas ses dessins**. Le device du projet Test_Devices gardait ceux d'avant la v76 après de nombreux chargements de presets (et une couche du corps vide). Seul un device neuf (supprimé puis réinséré, ou un preset glissé sur un emplacement vide) prend les dessins du preset ou du device. Un preset enregistré depuis un ancien device reprend ses anciens dessins (Inox, réenregistré à 02:41, resynchronisé).
+  - Pour les notes de version : après une mise à jour, supprimer et réinsérer KickForge dans les projets existants.

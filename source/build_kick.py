@@ -10,6 +10,7 @@ Usage: python build_kick.py [--out PATH]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -74,7 +75,7 @@ PARAMS = [
     ("EQ_MID", "eq_mid", "EQ Mid", "Mid", EQ_MIN, EQ_MAX, 1.0, U_DB, 1, 0, D_LOG),
     ("EQ_HIGH", "eq_high", "EQ High", "High", EQ_MIN, EQ_MAX, 1.0, U_DB, 1, 0, D_LOG),
     # v61: the click starts this late, to sit it on the body's transient (the Click tab)
-    ("CLICK_DELAY", "click_delay", "Click Delay", "Delay", 0.0, 0.015, 0.0, U_MS, 2, 0, D_LIN),   # (v62: 5 -> 15 ms)
+    ("CLICK_DELAY", "click_delay", "Click Delay", "Delay", 0.0, 0.005, 0.0, U_MS, 2, 0, D_LIN),   # (v62: 5 -> 15 ms; v79: back to 5 ms, finer)
 ]
 # Inputs of the phase core: the curve lengths (seconds, shown in ms) and the tune.
 LENGTHS = [
@@ -348,6 +349,16 @@ def pointer_ranges(atom):
     return [(edge[k - 1] if k else None, edge[k] if k < m - 1 else None) for k in range(m)]
 
 
+def num(x):
+    """(v79) A number for a panel expression: as %.9g, but never in exponent form (6.25e-05: Bitwig
+    refuses the minus sign in an expression), so tiny thresholds (the 5 ms click delay) are written out."""
+    text = f"{x:.9g}"
+    if "e" not in text:
+        return text
+    digits = max(0, 8 - math.floor(math.log10(abs(x))))
+    return f"{x:.{digits}f}".rstrip("0").rstrip(".")
+
+
 def led_thresholds(atom):
     """The value past which each LED lights: LED i of n sits at pointer position i (m-1)/(n-1)
     and lights once the pointer reaches it (LED 0 is always lit: threshold None)."""
@@ -437,7 +448,9 @@ def curve_display(binding, editor_panel, x, y, w, h, tooltip, axes, zoom=False, 
         "can_scroll_and_zoom_x#13958": v("Bool", zoom), "can_scroll_beyond_content_x#13965": v("Bool", False),
         "can_scroll_and_zoom_y#13966": v("Bool", zoom), "can_scroll_beyond_content_y#13967": v("Bool", False),
         # the waveform drawing (under) inside the display, at the back: it zooms with the curve
-        "items#6221": v("ObjectList", owned(*([under] if under is not None else []), element)),
+        # (v79: under may be a list, back to front: the click view's body layer over its click)
+        "items#6221": v("ObjectList", owned(*(under if isinstance(under, list) else [under] if under is not None else []),
+                                            element)),
     })
 
 
@@ -532,6 +545,54 @@ class PanelBuilder:
         self.items = []
         self.expressions = []
         self.art = None   # the knob art colour for the knobs added next (None: no encoder)
+
+    @contextlib.contextmanager
+    def tab_layer(self, tab):
+        """(v74) A tab's controls in a layer of their own: the items added inside go into a grid
+        over the tab's tray (theme.TAB_LAYER, their places made relative to it), shown with
+        SHOW[tab]; their own expressions lose the tab's condition (LAYER_SHOW: true in the layer).
+        Switching tabs then shows and hides five layers instead of some 800 images, one by one
+        (v73 and before: each with its own "VIEW == n", a lag on switching). Items outside the
+        tray stay where they were, in the panel's grid, with their expressions as they were."""
+        start, e_start = len(self.items), len(self.expressions)
+        yield
+        lx, ly, lw, lh = theme.TAB_LAYER
+        added, exprs = self.items[start:], self.expressions[e_start:]
+        del self.items[start:], self.expressions[e_start:]
+
+        def rect(item):
+            f = item["fields"]["layout_settings#6226"]["value"]["fields"]
+            return [f[k]["value"] for k in ("x#6215", "y#6216", "width#6217", "height#6218")], f
+
+        inside, outside = [], []
+        for item in added:
+            (x, y, w, h), _ = rect(item)
+            (inside if lx <= x and ly <= y and x + w <= lx + lw and y + h <= ly + lh else outside).append(item)
+        ids = {id(item) for item in inside}
+        target = {id(e): self.ref_target(e["fields"]["panel_item#6275"]) for e in exprs}
+        kept = []
+        for e in exprs:
+            if id(target[id(e)]) not in ids:
+                kept.append(e)
+                continue
+            text = layer_expression(e["fields"]["expression#6274"]["value"], tab)
+            if text is not None:
+                e["fields"]["expression#6274"]["value"] = text
+                kept.append(e)
+            elif e["fields"]["attribute_id#6316"]["value"] != 6309:
+                raise AssertionError(f"{tab} layer: an attribute expression would go")
+        for item in inside:
+            _, f = rect(item)
+            f["x#6215"]["value"] -= lx
+            f["y#6216"]["value"] -= ly
+        layer = grid(inside, layout(lx, ly, lw, lh))
+        self.items.extend([layer] + outside)
+        self.expressions.extend(kept)
+        self.expression(layer, 6309, SHOW[tab])
+        self.layers = getattr(self, "layers", []) + [(tab, len(inside), len(outside))]
+
+    def ref_target(self, wrapper):
+        return self.targets[id(wrapper)]
 
     def ref(self, target):
         wrapper = self._ref(target)
@@ -629,9 +690,9 @@ class PanelBuilder:
 
         self.add(knob_art(f"base_{self.art}", x, y, w), visible_if)
         for i, threshold in enumerate(led_thresholds(atom)):
-            self.add(knob_art(f"led_{self.art}_{i}", x, y, w), when(threshold and f"{pid} > {threshold:.9g}"))
+            self.add(knob_art(f"led_{self.art}_{i}", x, y, w), when(threshold and f"{pid} > {num(threshold)}"))
         for k, (low, high) in enumerate(pointer_ranges(atom)):
-            parts = [f"{pid} > {low:.9g}" if low is not None else "", f"{pid} < {high:.9g}" if high is not None else ""]
+            parts = [f"{pid} > {num(low)}" if low is not None else "", f"{pid} < {num(high)}" if high is not None else ""]
             self.add(knob_art(f"ptr_{k}", x, y, w), when(" && ".join(part for part in parts if part)))
 
     def eq_encoder(self, binding, title, tooltip, box, cap, visible_if, bipolar=True):
@@ -665,10 +726,10 @@ class PanelBuilder:
         if not bipolar:
             self.add(eq_art(f"base_{self.art}", x, y), visible_if)
             for i, threshold in enumerate(led_thresholds(atom)):
-                exprs.append(f"{pid} > {threshold:.9g}" if threshold else "")
+                exprs.append(f"{pid} > {num(threshold)}" if threshold else "")
                 self.add(eq_art(f"led_{self.art}_{i}", x, y), when(exprs[-1]))
             for k, (low, high) in enumerate(pointer_ranges(atom)):
-                parts = [f"{pid} > {low:.9g}" if low is not None else "", f"{pid} < {high:.9g}" if high is not None else ""]
+                parts = [f"{pid} > {num(low)}" if low is not None else "", f"{pid} < {num(high)}" if high is not None else ""]
                 exprs.append(" && ".join(part for part in parts if part))
                 self.add(eq_art(f"ptr_{k}", x, y), when(exprs[-1]))
             assert not any("-" in e for e in exprs), "a negative number in a panel expression (Bitwig refuses them)"
@@ -679,11 +740,11 @@ class PanelBuilder:
         self.add(eq_art(f"base_{self.art}", x, y), visible_if)
         for i in range(leds):
             k = i * (m - 1) // (leds - 1)
-            cond = "" if i == mid else (f"{pid} > {ranges[k][0]:.9g}" if i > mid else f"{pid} < {ranges[k][1]:.9g}")
+            cond = "" if i == mid else (f"{pid} > {num(ranges[k][0])}" if i > mid else f"{pid} < {num(ranges[k][1])}")
             exprs.append(cond)
             self.add(eq_art(f"led_{self.art}_{i}", x, y), when(cond))
         for k, (low, high) in enumerate(ranges):
-            parts = [f"{pid} > {low:.9g}" if low is not None else "", f"{pid} < {high:.9g}" if high is not None else ""]
+            parts = [f"{pid} > {num(low)}" if low is not None else "", f"{pid} < {num(high)}" if high is not None else ""]
             exprs.append(" && ".join(part for part in parts if part))
             self.add(eq_art(f"ptr_{k}", x, y), when(exprs[-1]))
         assert not any("-" in e for e in exprs), "a negative number in a panel expression (Bitwig refuses them)"
@@ -697,10 +758,13 @@ class PanelBuilder:
         under it, where the other knobs have their label."""
         atom = self.targets[id(binding)]
         pid = atom["fields"]["preset_identifier#701"]["value"]
-        items = atom["fields"]["value_type#702"]["value"]["fields"]["items#393"]["value"]
-        n = len(items)
+        # (v75) a decimal atom 0 .. n - 1 (v37-v74 an indexed one, attribute 255): its value
+        # rounded to the nearest item (a modulator moves it in between)
+        vt = atom["fields"]["value_type#702"]["value"]["fields"]
+        n = len(DIVISIONS)
+        assert (vt["min#292"]["value"], vt["max#293"]["value"]) == (0.0, n - 1.0), pid
         item = knob(binding, "", tooltip, x, y, theme.CELL, theme.CELL_H)
-        item["fields"]["attribute_id#11012"] = v("Int16", 255)
+        item["fields"]["show_value_popup#10569"] = v("Bool", False)   # (it would show the index: the screen shows the note)
         f = item["fields"]["layout_settings#6226"]["value"]["fields"]
         f["x#6215"]["value"], f["width#6217"]["value"] = x + (theme.CELL - NATIVE_KNOB[0]) // 2, NATIVE_KNOB[0]
         f["y#6216"]["value"], f["height#6218"]["value"] = y + NATIVE_DY, NATIVE_KNOB[1]
@@ -714,12 +778,15 @@ class PanelBuilder:
         def when(cond):
             return f"({visible_if}) && ({cond})" if cond else visible_if
 
+        def nearest(i):   # the value rounds to item i (no negative literal: Bitwig refuses them)
+            return " && ".join(p for p in (f"{pid} > {i - 0.5}" if i else "", f"{pid} < {i + 0.5}" if i < n - 1 else "") if p)
+
         self.add(knob_art(f"sel/base_{self.art}", x, y, theme.CELL), visible_if)
         for i in range(n):
-            self.add(knob_art(f"sel/led_{self.art}_{i}", x, y, theme.CELL), when(f"{pid} > {i - 1}" if i else ""))
+            self.add(knob_art(f"sel/led_{self.art}_{i}", x, y, theme.CELL), when(f"{pid} > {i - 0.5}" if i else ""))
         for i in range(n):
-            self.add(knob_art(f"sel/ptr_{i}", x, y, theme.CELL), when(f"{pid} == {i}"))
-        lcd_images(self, f"lcd_div_{self.art}", theme.DIV_AT[self.art], lambda i: f"{pid} == {i}", n, visible_if)
+            self.add(knob_art(f"sel/ptr_{i}", x, y, theme.CELL), when(nearest(i)))
+        lcd_images(self, f"lcd_div_{self.art}", theme.DIV_AT[self.art], nearest, n, visible_if)
         return item
 
 
@@ -735,6 +802,35 @@ SHOW = {
     # the master tab's length is the amp's (the kick's length)
     "m_time": "VIEW + 5 * A_SYNC == 0", "m_sync": "VIEW + 5 * A_SYNC == 5",
 }
+
+# (v74) inside a tab's layer (PanelBuilder.tab_layer) the tab's condition holds: each SHOW text
+# that names the tab becomes what is left of it there (TRUE: nothing left)
+TRUE = "\u00a7"
+LAYER_SHOW = {
+    "master": {SHOW["master"]: TRUE, SHOW["scope"]: TRUE, SHOW["m_time"]: "A_SYNC == 0", SHOW["m_sync"]: "A_SYNC == 1"},
+    "pitch": {SHOW["pitch"]: TRUE, SHOW["p_time"]: "P_SYNC == 0", SHOW["p_sync"]: "P_SYNC == 1"},
+    "amp": {SHOW["amp"]: TRUE, SHOW["a_time"]: "A_SYNC == 0", SHOW["a_sync"]: "A_SYNC == 1"},
+    "click": {SHOW["click"]: TRUE},
+    "fx": {SHOW["fx"]: TRUE, SHOW["scope"]: TRUE},
+}
+
+
+def layer_expression(text, tab):
+    """An expression of an item in tab's layer, without the tab's condition (None: always true)."""
+    for whole in sorted(LAYER_SHOW[tab], key=len, reverse=True):
+        text = text.replace(whole, LAYER_SHOW[tab][whole])
+    while True:
+        before = text
+        text = text.replace(f"({TRUE}) && ", "").replace(f" && ({TRUE})", "").replace(f"({TRUE})", TRUE)
+        if text.startswith("(") and text.endswith(")") and text.count("(") == 1:
+            text = text[1:-1]
+        if text == before:
+            break
+    if text == TRUE:
+        return None
+    assert TRUE not in text and "VIEW" not in text, f"{tab} layer: {text!r}"
+    return text
+
 
 DIV_BEATS = [0.0625, 0.0833333, 0.125, 0.1666667, 0.25, 0.3333333, 0.375, 0.5, 0.6666667, 0.75,
              1.0, 1.3333333, 1.5, 2.0, 3.0, 4.0]
@@ -785,8 +881,8 @@ def tab_side(pb, c, tab):
         pb.selector(ref(c[f"{T}_DIV"]), "Length as a note value (follows the project tempo): turn to step "
                     "through 1/64 .. 1 bar (T: triplet, D: dotted)", x0, r0, SHOW[f"{t}_sync"])
     else:
-        pb.add(popup_chooser(ref(c[f"{T}_DIV"]), "Length as a note value (follows the project tempo)",
-                             x0, r0 + 4, theme.CELL, 4), SHOW[f"{t}_sync"])
+        pb.add(knob(ref(c[f"{T}_DIV"]), "", "Length as a note value (follows the project tempo)",
+                    x0, r0, theme.CELL, theme.CELL_H), SHOW[f"{t}_sync"])   # (v75: a decimal, no popup)
         caption(pb, "Length", x0, r0 + KNOB_ART_H, theme.CELL, 3, SHOW[f"{t}_sync"])
     extra_tip = ("Pitch: the top of the curve, in semitones above G0 (49 Hz). It stays put when you "
                  "change the tune: the tune only moves the bottom (the fundamental)"
@@ -872,7 +968,7 @@ def master_tab(pb, c):
         pb.selector(ref(c["A_DIV"]), length_tip + ": a note value, turn to step through 1/64 .. 1 bar",
                     cols[0], theme.ROWS[0], SHOW["m_sync"])
     else:
-        pb.add(popup_chooser(ref(c["A_DIV"]), length_tip, cols[0], theme.ROWS[0] + 4, theme.CELL, 4), SHOW["m_sync"])
+        pb.add(knob(ref(c["A_DIV"]), "Length", length_tip, cols[0], theme.ROWS[0], theme.CELL, theme.CELL_H), SHOW["m_sync"])
     knob_cell(pb, ref(p["PHASE"][0]), "Phase", "Phase of the body once the click is over and the pitch has "
               "landed on the fundamental (the attack and the click are left as they are), degrees", cols[1], 0, show)
     knob_cell(pb, ref(p["LEVEL"][0]), "Level", p["LEVEL"][1][2], theme.TAB2_X + theme.CELL // 2, 1, show)
@@ -963,16 +1059,22 @@ def device_panel(ref, c, name):
         item["fields"]["layout_settings#6226"] = stack_layout(vw, vh)
         pb.expression(item, 6309, SHOW[tab])
         layers.append(item)
-        tab_side(pb, c, tab)
+        with pb.tab_layer(tab):
+            tab_side(pb, c, tab)
     pb.add(stack(layers, layout(vx, vy, vw, vh)), "VIEW > 0 && VIEW < 3")
     # (v70) the click's curves, PITCH or AMP (CLICK_EDIT), over its waveform
     pb.add(stack(click_editors(pb, ref, c, vw, vh, True), layout(vx, vy, vw, vh)), SHOW["click"])
     pb.add(wave_surface(ref(c["draw_master"]), vx, vy, vw, vh), SHOW["scope"])
     if KNOB_ART_ON:   # the glass over the screen (images take no clicks: the curve stays editable)
         pb.add(panel_image("glass_view", *panel_cells()["glass_view"]))
-    click_tab(pb, c)
-    master_tab(pb, c)
-    fx_tab(pb, c)
+    with pb.tab_layer("click"):
+        click_tab(pb, c)
+    with pb.tab_layer("master"):
+        master_tab(pb, c)
+    with pb.tab_layer("fx"):
+        fx_tab(pb, c)
+    for tab, inside, outside in pb.layers:
+        print(f"  {tab} layer: {inside} items, {outside} outside the tray")
     theme_toggle(pb, c)   # (v45: on every tab, at the name plate)
     return panel(name, pb.items, theme.PANEL_W, theme.PANEL_H, pb.expressions)
 
@@ -989,8 +1091,11 @@ def click_editors(pb, ref, c, w, h, zoom, show=None):
                                        ("click_amp_curve", theme.CURVE_COLOR["amp"]))):
         wave = wave_surface(ref(c["draw_click"]), 0, 0, 1, 1)
         wave["fields"]["layout_settings#6226"] = stack_layout(w, h)
+        # (v79) the body, in grey over the click (its own drawing: the click's has no room for it)
+        body = wave_surface(ref(c["draw_click_body"]), 0, 0, 1, 1)
+        body["fields"]["layout_settings#6226"] = stack_layout(w, h)
         item = curve_display(ref(c[name]), None, 0, 0, 1, 1, CLICK_EDIT_TIP, CURVE_AXES, zoom=zoom,
-                             under=wave, color=color)
+                             under=[wave, body], color=color)
         item["fields"]["layout_settings#6226"] = stack_layout(w, h)
         pb.expression(item, 6309, f"({show}) && (CLICK_EDIT == {k})" if show else f"CLICK_EDIT == {k}")
         items.append(item)
@@ -1119,9 +1224,15 @@ def document(binaries, shaders):
         # with it crashed Bitwig on load (an integer atom given a decimal preset value).
         "TUNE": integer_atom("TUNE_NOTE", "Tune", 24, 36, 31, prefix="MIDI "),
         "P_SYNC": indexed_atom("P_SYNC", "Pitch Length Mode", ["Time", "Sync"], 1),
-        "P_DIV": indexed_atom("P_DIV", "Pitch Length Note", DIVISIONS, DIVISIONS.index("1/8")),
+        # (v75) the note values: decimal parameters 0 .. 15 (an index into DIVISIONS, rounded by the
+        # phase core), so that modulators reach them (v37-v74 indexed atoms P_DIV / A_DIV: Bitwig
+        # does not modulate a list); new ids, as a decimal atom given an indexed preset value is
+        # trouble (v17's TUNE): tools/convert_div_presets.py turned the presets' P_DIV / A_DIV over
+        "P_DIV": decimal_atom("P_NOTE", "Pitch Length Note", "Note", 0.0, len(DIVISIONS) - 1.0,
+                              float(DIVISIONS.index("1/8")), U_NONE, 0, 0),
         "A_SYNC": indexed_atom("A_SYNC", "Amp Length Mode", ["Time", "Sync"], 1),
-        "A_DIV": indexed_atom("A_DIV", "Amp Length Note", DIVISIONS, DIVISIONS.index("1/8")),
+        "A_DIV": decimal_atom("A_NOTE", "Amp Length Note", "Note", 0.0, len(DIVISIONS) - 1.0,
+                              float(DIVISIONS.index("1/8")), U_NONE, 0, 0),
         "A_SCALE": indexed_atom("A_SCALE", "Amp Scale", ["Lin", "dB"], 0),
         "CLICK_TYPE": indexed_atom("CLICK_TYPE", "Click Noise", CLICK_TYPES, CLICK_TYPES.index("909 Hat")),   # (v72: the default, [MindB] Kick 01's)
         # (v70) which of the click's curves the screen edits (the click tab's PITCH / AMP pads)
@@ -1140,8 +1251,8 @@ def document(binaries, shaders):
     phase_core = nitro(binaries["phase"],
         [nitro_port("note_in", 0, 1, 2, event="NoteEvent"),
          nitro_port("pitch_length", 1, 1, 1), nitro_port("amp_length", 2, 1, 1),
-         nitro_port("pitch_sync", 3, 1, 3), nitro_port("pitch_div", 4, 1, 3),
-         nitro_port("amp_sync", 5, 1, 3), nitro_port("amp_div", 6, 1, 3),
+         nitro_port("pitch_sync", 3, 1, 3), nitro_port("pitch_div", 4, 1, 1),   # (v75: audio, a decimal)
+         nitro_port("amp_sync", 5, 1, 3), nitro_port("amp_div", 6, 1, 1),
          nitro_port("beats_per_frame", 7, 1, 1), nitro_port("tune_note", 8, 1, 3),
          nitro_port("pitch_time_scale", 9, 1, 1), nitro_port("amp_time_scale", 10, 1, 1),
          nitro_port("view", 11, 1, 3)],
@@ -1191,14 +1302,18 @@ def document(binaries, shaders):
              nitro_port("click_hp", 13, 1, 1), nitro_port("pitch_time_scale", 14, 1, 1),
              nitro_port("amp_time_scale", 15, 1, 1), nitro_port("click_delay", 16, 1, 1), nitro_port("fx_on", 17, 1, 3),
              nitro_port("click_pitch_curve", 18, 1, 1), nitro_port("click_amp_curve", 19, 1, 1),
-             nitro_port("click_ctl", 20, 2, 1)],
+             nitro_port("click_ctl", 20, 2, 1),
+             # (v76) the FX, for the oscilloscope's display (the master tab's) to draw the kick after them
+             nitro_port("mid_drive", 21, 1, 1), nitro_port("body_comp", 22, 1, 1),
+             nitro_port("eq_low", 23, 1, 1), nitro_port("eq_mid", 24, 1, 1), nitro_port("eq_high", 25, 1, 1)],
             [wire(pitch_curve), wire(amp_curve), wire(phase_core, 2), wire(phase_core, 3),
              wire(atoms["PITCH"][0]), wire(atoms["PHASE"][0]), wire(phase_core, 4),
              wire(atoms["P_CURVE"][0]), wire(modes["A_SCALE"]), wire(modes["CLICK_TYPE"]),
              wire(atoms["CLICK"][0]), wire(atoms["CLICK_DECAY"][0]), wire(atoms["CLICK_TONE"][0]),
              wire(atoms["CLICK_HP"][0]), wire(atoms["P_TIME"][0]), wire(atoms["A_TIME"][0]),
              wire(atoms["CLICK_DELAY"][0]), wire(fx_on),
-             wire(click_pitch_curve), wire(click_amp_curve), wire(phase_core, 6)],
+             wire(click_pitch_curve), wire(click_amp_curve), wire(phase_core, 6),
+             *(wire(atoms[key][0]) for key in ("MID_DRIVE", "COMP", "EQ_LOW", "EQ_MID", "EQ_HIGH"))],
             [nitro_port("lane0", 0, 4, 1, output=True), nitro_port("lane1", 1, 4, 1, output=True),
              nitro_port("lane2", 2, 4, 1, output=True)])
     # the click's drawing reads the amp display (the body's length and level, the click's settings)
@@ -1206,11 +1321,17 @@ def document(binaries, shaders):
     # before has nothing under their ids, so they draw nothing until the device is inserted again)
     # (v39: the master tab's oscilloscope reads its own display, which sends the drive)
     # (v62: the click's drawing reads the master display, which sends the click's delay)
+    probe = None
+    if "probe" in binaries:   # (--probe-ctl) the master drawing's inputs 3 .. 8 fed known values
+        probe = nitro(binaries["probe"], [], [], [nitro_port(f"out{n}", n - 3, 4, 1, output=True) for n in range(3, 9)])
     for tab, source in (("pitch", "pitch"), ("amp", "amp"), ("click", "click"), ("tune", "pitch"),
-                        ("pitch_detail", "pitch"), ("amp_detail", "amp"), ("master", "master")):
+                        ("pitch_detail", "pitch"), ("amp_detail", "amp"), ("master", "master"),
+                        ("click_body", "master")):   # (v79: the click view's body, over its click)
+        extra = [wire(probe, i) for i in range(6)] if (probe is not None and tab == "master") else \
+                [connection() for _ in range(6)]
         drawings[tab] = obj(5512, "", {
             "settings#6194": settings([wire(displays[source], 0), wire(displays[source], 1),
-                                       wire(displays[source], 2), *(connection() for _ in range(6))]),
+                                       wire(displays[source], 2), *extra]),
             "channel_count#607": v("Byte", 0), "name#374": v("String", ""),
             "prevent_parent_from_sleeping#11002": v("Bool", False),
             # The shader is device state: a project or preset saves it (class 5516, by this id) and
@@ -1227,7 +1348,8 @@ def document(binaries, shaders):
          "click_pitch_curve": click_pitch_curve, "click_amp_curve": click_amp_curve,
          "draw_pitch": drawings["pitch"], "draw_amp": drawings["amp"], "draw_click": drawings["click"],
          "draw_tune": drawings["tune"], "draw_pitch_detail": drawings["pitch_detail"],
-         "draw_amp_detail": drawings["amp_detail"], "draw_master": drawings["master"]}
+         "draw_amp_detail": drawings["amp_detail"], "draw_master": drawings["master"],
+         "draw_click_body": drawings["click_body"]}
     big = big_panel(ref, c)
     main = main_panel(ref, c)
     maximized = v("ObjectRef", 0)
@@ -1238,8 +1360,9 @@ def document(binaries, shaders):
             audio_source, keytrack, *(a for a, _ in atoms.values()), view, panel_look, *modes.values(), fx_on,
             transport, phase_core, pitch_curve, amp_curve, click_pitch_curve, click_amp_curve, voice_core,
             displays["pitch"], displays["amp"], displays["master"], displays["click"],   # (v62: master before the drawings: the click's reads it)
+            *([probe] if probe is not None else []),
             drawings["pitch"], drawings["amp"], drawings["click"], drawings["tune"],
-            drawings["pitch_detail"], drawings["amp_detail"], drawings["master"])),
+            drawings["pitch_detail"], drawings["amp_detail"], drawings["master"], drawings["click_body"])),
         "panels#6213": v("ObjectList", owned(main, big)),
         "proxy_out_ports#178": v("ObjectList", owned(output_proxy)),
         "device_UUID#385": v("Uuid", UUID), "device_name#386": v("String", NAME),
@@ -1268,7 +1391,7 @@ def document(binaries, shaders):
     # every reference must point backwards in reading order (Bitwig resolves them while reading)
     check_backward_refs(body)
 
-    revision = hashlib.sha1(f"{UUID}/v73-click-level-in-tab".encode()).hexdigest()
+    revision = hashlib.sha1(f"{UUID}/v79-click-delay-5ms{'-probe' if 'probe' in binaries else ''}".encode()).hexdigest()
     return {
         "header": {"format_version": 3, "serialization_format": 2, "document_version": 207,
                    "object_offset": 0, "resources_offset": 0, "flags": 0},
@@ -1277,11 +1400,51 @@ def document(binaries, shaders):
     }
 
 
+def check_port_order(doc, sources, binaries):
+    """(v78) Each Nitro core's ports, as the document lists them, in the order its source declares
+    them: Bitwig wires them by position (v76-v77 declared the display's FX inputs before the
+    click's, numbered after: the click's curves fed the scope's FX, the click display got none)."""
+    import re
+    cores = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("class_id") == 1721:
+                cores.append(n["fields"])
+            for value in n.values():
+                walk(value)
+        elif isinstance(n, list):
+            for value in n:
+                walk(value)
+    walk(doc)
+
+    def names(fields, key):
+        out = []
+        for entry in fields[key]["value"]:
+            port = entry.get("Object", entry)
+            out.append(next(v["value"] for k, v in port["fields"].items() if k.startswith("name#")))
+        return out
+    for key, source in sources.items():
+        text = Path(source).read_text(encoding="utf-8")
+        declared_in = re.findall(r"^\s*(?:audio|value|event)_inport\s+[^\s;]+\s+(\w+)", text, re.M)
+        declared_out = re.findall(r"^\s*(?:audio|value|event)_outport\s+[^\s;]+\s+(\w+)", text, re.M)
+        storage = [0, *binaries[key]]
+        matched = [f for f in cores if f["code_storage#10421"]["value"] == storage]
+        assert matched, f"{key}: no Nitro core in the document"
+        for fields in matched:
+            got_in, got_out = names(fields, "nitro_inputs#15756"), names(fields, "nitro_outputs#15757")
+            assert got_in == declared_in, f"{key}: inputs {got_in} != source {declared_in}"
+            assert got_out == declared_out, f"{key}: outputs {got_out} != source {declared_out}"
+
+
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--out", type=Path, default=HERE / "build" / f"{NAME}.bwdevice")
     cli.add_argument("--json", type=Path, help="also write the document JSON here")
     cli.add_argument("--no-knob-art", action="store_true", help="native knobs only, no neon rings")
+    cli.add_argument("--probe-ctl", action="store_true",
+                     help="test build: the master drawing's inputs 3-8 fed known values, its screen prints "
+                          "the uniforms Bitwig declares (ctl, cvGate0, beatTime, iTime, width, height)")
     args = cli.parse_args()
     global KNOB_ART_ON
     KNOB_ART_ON = not args.no_knob_art
@@ -1292,6 +1455,8 @@ def main() -> int:
         tmp = Path(tmp)
         binaries, shaders = {}, {}
         sources = {"phase": HERE / "kick_phase.nitro", "voice": HERE / "kick_voice.nitro"}
+        if args.probe_ctl:
+            sources["probe"] = HERE / "kick_probe.nitro"
         template = (HERE / "kick_display.nitro.in").read_text(encoding="utf-8")
         wave = (HERE / "kick_wave.sksl.in").read_text(encoding="utf-8")
         # the device palette (theme.py): each tab's attack and tail colours
@@ -1303,18 +1468,29 @@ def main() -> int:
                 source = HERE / "build" / f"kick_display_{tab}.nitro"
                 source.write_text(template.replace("@TAB@", str(min(index, 1)))
                                   .replace("@MASTER@", str(int(tab in ("master", "click"))))
-                                  .replace("@CLICK@", str(int(tab == "click"))).replace("@NAME@", tab), encoding="utf-8")
+                                  .replace("@CLICK@", str(int(tab == "click")))
+                                  .replace("@SCOPE@", str(int(tab == "master"))).replace("@NAME@", tab), encoding="utf-8")
                 sources[f"display_{tab}"] = source
             for name, detail in ((tab, 1), *(((f"{tab}_detail", theme.DETAIL),) if tab in ("pitch", "amp") else ())):
                 shaders[name] = (wave.replace("@NAME@", name).replace("@COLOR@", color).replace("@COLOR2@", color2)
                                  .replace("@MODE@", f"{index}.0").replace("@DETAIL@", f"{detail}.0")
-                                 .replace("@X_END@", repr(float(theme.X_END))))
+                                 .replace("@X_END@", repr(float(theme.X_END))).replace("@OVERLAY@", "0.0"))
+                if args.probe_ctl and name == "master":
+                    shaders[name] = (shaders[name].replace("half4 main(float2 fragCoord) {", "half4 scopeMain(float2 fragCoord) {")
+                                     + (HERE / "probe_screen.sksl").read_text(encoding="utf-8"))
                 (HERE / "build" / f"kick_wave_{name}.sksl").write_text(shaders[name], encoding="utf-8")
+        # (v79) the click view's body layer: the click view's span, the body from the oscilloscope's display
+        color, color2 = ("float3(%.3f, %.3f, %.3f)" % c for c in theme.WAVE["click"])
+        shaders["click_body"] = (wave.replace("@NAME@", "click_body").replace("@COLOR@", color).replace("@COLOR2@", color2)
+                                 .replace("@MODE@", "2.0").replace("@DETAIL@", "1.0")
+                                 .replace("@X_END@", repr(float(theme.X_END))).replace("@OVERLAY@", "1.0"))
+        (HERE / "build" / "kick_wave_click_body.sksl").write_text(shaders["click_body"], encoding="utf-8")
         for key, source in sources.items():
             binary = tmp / (key + ".nitrobin")
             compiler_profiles.compile_source(source, binary, INPUTS)
             binaries[key] = binary.read_bytes()
         doc = document(binaries, shaders)
+        check_port_order(doc, sources, binaries)
         source = tmp / "device.json"
         source.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         if args.json:
